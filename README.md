@@ -46,7 +46,9 @@ data/
 │   │   ├── canada_queries_2026-08.csv
 │   │   └── canada_pages_2026-08.csv
 │   └── GA4/
-│       └── traffic_acquisition_2026-08.csv
+│       ├── traffic_acquisition_2026-08.csv
+│       ├── landing_2026-08.csv
+│       └── events_2026-08.csv
 └── AjayKumar/
     ├── GSC/
     │   ├── queries_2026-07.csv
@@ -54,12 +56,14 @@ data/
     │   ├── canada_queries_2026-07.csv
     │   └── canada_pages_2026-07.csv
     └── GA4/
-        └── traffic_acquisition_2026-07.csv
+        ├── traffic_acquisition_2026-07.csv
+        ├── landing_2026-07.csv
+        └── events_2026-07.csv
 ```
 
 ## Streams
 
-Each month produces five CSV files per site:
+Each month produces seven CSV files per site:
 
 - **GSC queries** / **GSC pages**: all traffic, columns
   `query,clicks,impressions,ctr,position` / `page,clicks,impressions,ctr,position`.
@@ -68,6 +72,15 @@ Each month produces five CSV files per site:
 - **GA4 traffic acquisition**: `traffic_acquisition_YYYY-MM.csv` from the GA4
   `runReport` endpoint (dimension `sessionSourceMedium`), columns
   `session_source_medium,sessions,engagedSessions,engagementRate,averageSessionDuration,keyEvents,sessionKeyEventRate`.
+- **GA4 landing pages**: `landing_YYYY-MM.csv` (dimension `landingPage`) with a
+  `TOTAL` row aggregation, columns
+  `landing_page,sessions,activeUsers,newUsers,averageEngagementTimePerSession,keyEvents,sessionKeyEventRate`.
+- **GA4 events**: `events_YYYY-MM.csv` (dimension `eventName`) filtered to
+  `booking_link_click`, `cal_cta_click`, `calendly_cta_click`, columns
+  `event_name,eventCount,totalUsers,eventCountPerUser`.
+
+All GA4 reports use the same `runReport` endpoint with the date range adjusted
+per month (`dateRanges` with `startDate`/`endDate`).
 
 Example: a monthly run on 22 September 2026 requests 1–31 August 2026 and, if
 the July 2026 files are missing, 1–31 July 2026. A quarterly AjayKumar run in

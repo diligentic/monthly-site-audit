@@ -8,29 +8,36 @@ from constants.api_urls import (
     GA4_RUN_REPORT_PATH,
     GOOGLE_ANALYTICS_DATA_BASE_URL,
 )
-from constants.ga4 import GA4_DIMENSIONS, GA4_METRICS
+from constants.ga4 import GA4Report
 from constants.search_console import GSC_API_KEY_ENV_VAR, GSC_BEARER_TOKEN_ENV_VAR
 from constants.sites import Site
 from utils.get_env import _get_env
 from utils.http import REQUEST_TIMEOUT_SECONDS, build_retry_session
 
 
-def _build_ga4_payload(start_date: date, end_date: date) -> dict[str, Any]:
-    return {
+def _build_ga4_payload(
+    report: GA4Report,
+    start_date: date,
+    end_date: date,
+) -> dict[str, Any]:
+    payload = {
         "dateRanges": [
             {
                 "startDate": start_date.isoformat(),
                 "endDate": end_date.isoformat(),
             }
         ],
-        "dimensions": GA4_DIMENSIONS,
-        "metrics": GA4_METRICS,
+        "dimensions": report.dimensions,
+        "metrics": report.metrics,
     }
+    payload.update(report.extra_payload)
+    return payload
 
 
 def fetch_ga4_data(
     *,
     property_id_env_var: str,
+    report: GA4Report,
     start_date: date,
     end_date: date,
     session: requests.Session | None = None,
@@ -55,7 +62,7 @@ def fetch_ga4_data(
             request_url,
             params={"key": api_key},
             headers=headers,
-            json=_build_ga4_payload(start_date, end_date),
+            json=_build_ga4_payload(report, start_date, end_date),
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
@@ -64,7 +71,7 @@ def fetch_ga4_data(
         response_body = error.response.text if error.response is not None else ""
         date_range = f"{start_date.isoformat()}..{end_date.isoformat()}"
         raise RuntimeError(
-            f"GA4 report request failed for property {property_id} "
+            f"GA4 {report.label} request failed for property {property_id} "
             f"{date_range}: {response_body or error}"
         ) from error
     finally:

@@ -9,6 +9,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from constants.ga4 import GA4_REPORTS, GA4Report
 from constants.search_console import COUNTRY_FILTER_EXPRESSION
 from constants.sites import (
     QUARTERLY_MONTHS,
@@ -41,6 +42,19 @@ class Stream:
     fetch: Callable[..., dict[str, Any]]
     csv_path: Callable[..., Path]
     write_rows: Callable[..., Path]
+
+
+def ga4_stream(site: Site, report: GA4Report) -> Stream:
+    return Stream(
+        label=f"{site.name} {Provider.GA4.value} {report.label}",
+        fetch=partial(
+            fetch_ga4_data,
+            property_id_env_var=site.ga4_property_id_env_var,
+            report=report,
+        ),
+        csv_path=partial(ga4_csv_path, site, report),
+        write_rows=partial(write_ga4_rows_to_csv, site, report),
+    )
 
 
 def streams_for(site: Site) -> tuple[Stream, ...]:
@@ -94,15 +108,7 @@ def streams_for(site: Site) -> tuple[Stream, ...]:
                 country=COUNTRY_FILTER_EXPRESSION,
             ),
         ),
-        Stream(
-            label=f"{site.name} {Provider.GA4.value} traffic",
-            fetch=partial(
-                fetch_ga4_data,
-                property_id_env_var=site.ga4_property_id_env_var,
-            ),
-            csv_path=partial(ga4_csv_path, site),
-            write_rows=partial(write_ga4_rows_to_csv, site),
-        ),
+        *[ga4_stream(site, report) for report in GA4_REPORTS],
     )
 
 
