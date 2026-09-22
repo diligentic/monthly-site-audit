@@ -2,6 +2,10 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from constants.ga4 import (
+    GA4_PROPERTY_ID_AJAYKUMAR,
+    GA4_PROPERTY_ID_DILIGENTIC,
+)
 from constants.sources import Provider
 
 DATA_ROOT = Path(__file__).resolve().parent.parent / "data"
@@ -21,6 +25,7 @@ class Site:
     schedule: Schedule
     history_months: int
     always_fetch_months: int
+    ga4_property_id_env_var: str
 
     @property
     def data_dir(self) -> Path:
@@ -36,6 +41,7 @@ DILIGENTIC = Site(
     schedule=Schedule.MONTHLY,
     history_months=2,
     always_fetch_months=1,
+    ga4_property_id_env_var=GA4_PROPERTY_ID_DILIGENTIC,
 )
 
 AJAYKUMAR = Site(
@@ -44,6 +50,7 @@ AJAYKUMAR = Site(
     schedule=Schedule.QUARTERLY,
     history_months=6,
     always_fetch_months=3,
+    ga4_property_id_env_var=GA4_PROPERTY_ID_AJAYKUMAR,
 )
 
 SITES = (DILIGENTIC, AJAYKUMAR)

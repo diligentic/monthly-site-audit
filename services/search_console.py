@@ -3,8 +3,6 @@ from typing import Any
 from urllib.parse import quote
 
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 from constants.api_urls import (
     GOOGLE_SEARCH_CONSOLE_API_BASE_URL,
@@ -18,21 +16,7 @@ from constants.search_console import (
     SEARCH_ANALYTICS_ROW_LIMIT,
 )
 from utils.get_env import _get_env
-
-REQUEST_TIMEOUT_SECONDS = 30
-
-
-def _build_session() -> requests.Session:
-    retry_policy = Retry(
-        total=3,
-        backoff_factor=0.5,
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset({"POST"}),
-    )
-    adapter = HTTPAdapter(max_retries=retry_policy)
-    session = requests.Session()
-    session.mount("https://", adapter)
-    return session
+from utils.http import REQUEST_TIMEOUT_SECONDS, build_retry_session
 
 
 def _country_filter_group(country: str) -> dict[str, Any]:
@@ -92,7 +76,7 @@ def _fetch_metrics(
         "Accept": "application/json",
     }
 
-    http_session = session or _build_session()
+    http_session = session or build_retry_session()
     try:
         response = http_session.post(
             request_url,

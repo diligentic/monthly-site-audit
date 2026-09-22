@@ -17,12 +17,14 @@ from constants.sites import (
     Site,
 )
 from constants.sources import Provider
+from services.ga4 import fetch_ga4_data, validate_ga4_credentials
 from services.search_console import (
     fetch_page_data,
     fetch_query_data,
     validate_credentials,
 )
 from utils.dates import month_range
+from utils.ga4_csv import ga4_csv_path, write_ga4_rows_to_csv
 from utils.pages_csv import pages_csv_path, write_page_rows_to_csv
 from utils.queries_csv import queries_csv_path, write_query_rows_to_csv
 
@@ -92,6 +94,15 @@ def streams_for(site: Site) -> tuple[Stream, ...]:
                 country=COUNTRY_FILTER_EXPRESSION,
             ),
         ),
+        Stream(
+            label=f"{site.name} {Provider.GA4.value} traffic",
+            fetch=partial(
+                fetch_ga4_data,
+                property_id_env_var=site.ga4_property_id_env_var,
+            ),
+            csv_path=partial(ga4_csv_path, site),
+            write_rows=partial(write_ga4_rows_to_csv, site),
+        ),
     )
 
 
@@ -152,7 +163,7 @@ def is_due(site: Site, today: date) -> bool:
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Collect Search Console performance data on a monthly/quarterly schedule."
+        description="Collect Search Console and GA4 performance data on a monthly/quarterly schedule."
     )
     parser.add_argument(
         "--site",
@@ -172,6 +183,7 @@ def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     load_dotenv()
     validate_credentials()
+    validate_ga4_credentials(SITES)
     today = args.date or datetime.now(UTC).date()
 
     failures = 0
