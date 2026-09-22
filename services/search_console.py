@@ -35,17 +35,35 @@ def _build_session() -> requests.Session:
     return session
 
 
+def _country_filter_group(country: str) -> dict[str, Any]:
+    return {
+        "groupType": "and",
+        "filters": [
+            {
+                "dimension": "country",
+                "operator": "equals",
+                "expression": country,
+            }
+        ],
+    }
+
+
 def _build_query_payload(
     start_date: date,
     end_date: date,
     dimensions: list[str],
+    *,
+    country: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "startDate": start_date.isoformat(),
         "endDate": end_date.isoformat(),
         "dimensions": dimensions,
         "rowLimit": SEARCH_ANALYTICS_ROW_LIMIT,
     }
+    if country:
+        payload["dimensionFilterGroups"] = [_country_filter_group(country)]
+    return payload
 
 
 def _fetch_metrics(
@@ -54,12 +72,15 @@ def _fetch_metrics(
     start_date: date,
     end_date: date,
     dimensions: list[str],
+    country: str | None = None,
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
     api_key = _get_env(GSC_API_KEY_ENV_VAR)
     bearer_token = _get_env(GSC_BEARER_TOKEN_ENV_VAR)
 
-    request_payload = _build_query_payload(start_date, end_date, dimensions)
+    request_payload = _build_query_payload(
+        start_date, end_date, dimensions, country=country
+    )
     encoded_site_url = quote(site_url, safe="")
     request_url = (
         f"{GOOGLE_SEARCH_CONSOLE_API_BASE_URL}/"
@@ -105,6 +126,7 @@ def fetch_query_data(
     site_url: str,
     start_date: date,
     end_date: date,
+    country: str | None = None,
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
     return _fetch_metrics(
@@ -112,6 +134,7 @@ def fetch_query_data(
         start_date=start_date,
         end_date=end_date,
         dimensions=SEARCH_ANALYTICS_DIMENSIONS,
+        country=country,
         session=session,
     )
 
@@ -121,6 +144,7 @@ def fetch_page_data(
     site_url: str,
     start_date: date,
     end_date: date,
+    country: str | None = None,
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
     return _fetch_metrics(
@@ -128,5 +152,6 @@ def fetch_page_data(
         start_date=start_date,
         end_date=end_date,
         dimensions=SEARCH_ANALYTICS_PAGE_DIMENSIONS,
+        country=country,
         session=session,
     )

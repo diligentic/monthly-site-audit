@@ -1,6 +1,5 @@
 import argparse
 import logging
-from dotenv import load_dotenv
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -8,6 +7,9 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
+from constants.search_console import COUNTRY_FILTER_EXPRESSION
 from constants.sites import (
     QUARTERLY_MONTHS,
     SITES,
@@ -39,7 +41,7 @@ class Stream:
     write_rows: Callable[..., Path]
 
 
-def streams_for(site: Site) -> tuple[Stream, Stream]:
+def streams_for(site: Site) -> tuple[Stream, ...]:
     provider = Provider.GSC
     return (
         Stream(
@@ -53,6 +55,42 @@ def streams_for(site: Site) -> tuple[Stream, Stream]:
             fetch=partial(fetch_page_data, site_url=site.gsc_site_url),
             csv_path=partial(pages_csv_path, site),
             write_rows=partial(write_page_rows_to_csv, site),
+        ),
+        Stream(
+            label=f"{site.name} {provider.value} Canada query",
+            fetch=partial(
+                fetch_query_data,
+                site_url=site.gsc_site_url,
+                country=COUNTRY_FILTER_EXPRESSION,
+            ),
+            csv_path=partial(
+                queries_csv_path,
+                site,
+                country=COUNTRY_FILTER_EXPRESSION,
+            ),
+            write_rows=partial(
+                write_query_rows_to_csv,
+                site,
+                country=COUNTRY_FILTER_EXPRESSION,
+            ),
+        ),
+        Stream(
+            label=f"{site.name} {provider.value} Canada page",
+            fetch=partial(
+                fetch_page_data,
+                site_url=site.gsc_site_url,
+                country=COUNTRY_FILTER_EXPRESSION,
+            ),
+            csv_path=partial(
+                pages_csv_path,
+                site,
+                country=COUNTRY_FILTER_EXPRESSION,
+            ),
+            write_rows=partial(
+                write_page_rows_to_csv,
+                site,
+                country=COUNTRY_FILTER_EXPRESSION,
+            ),
         ),
     )
 

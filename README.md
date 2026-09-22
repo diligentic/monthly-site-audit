@@ -37,21 +37,30 @@ data/
 ├── Diligentic/
 │   └── GSC/
 │       ├── queries_2026-08.csv
-│       └── pages_2026-08.csv
+│       ├── pages_2026-08.csv
+│       ├── canada_queries_2026-08.csv
+│       └── canada_pages_2026-08.csv
 └── AjayKumar/
     └── GSC/
         ├── queries_2026-07.csv
-        └── pages_2026-07.csv
+        ├── pages_2026-07.csv
+        ├── canada_queries_2026-07.csv
+        └── canada_pages_2026-07.csv
 ```
 
-Files per month: `queries_YYYY-MM.csv` (columns
-`query,clicks,impressions,ctr,position`) and `pages_YYYY-MM.csv` (columns
-`page,clicks,impressions,ctr,position`), where `page` holds the page URL.
+Each month produces four CSV files per site: plain **queries** and **pages**
+(all traffic), plus **Canada queries** and **Canada pages** filtered with
+`dimensionFilterGroups` (`country equals CAN`).
+
+Files per month: `queries_YYYY-MM.csv` / `canada_queries_YYYY-MM.csv` (columns
+`query,clicks,impressions,ctr,position`) and `pages_YYYY-MM.csv` /
+`canada_pages_YYYY-MM.csv` (columns `page,clicks,impressions,ctr,position`),
+where `page` holds the page URL.
 
 Example: a monthly run on 22 September 2026 requests 1–31 August 2026 and, if
-`queries_2026-07.csv`/`pages_2026-07.csv` are missing, 1–31 July 2026. A
-quarterly AjayKumar run in January 2026 backfills July–December 2025; the
-April run then fetches only January–March 2026.
+the July 2026 files are missing, 1–31 July 2026. A quarterly AjayKumar run in
+January 2026 backfills July–December 2025; the April run then fetches only
+January–March 2026.
 
 Failures are logged per site/month and the script exits non-zero so the cron
 job alerts; one failing month or site does not stop the rest of the run.
