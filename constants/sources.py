@@ -1,0 +1,7 @@
+from enum import Enum
+
+
+class Provider(Enum):
+    GSC = "GSC"
+    BING = "Bing"
+    GA4 = "GA4"
