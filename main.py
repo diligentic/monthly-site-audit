@@ -29,6 +29,7 @@ from services.search_console import (
     fetch_query_data,
     validate_credentials,
 )
+from services.sitemap import fetch_sitemap_data
 from utils.bing_csv import (
     bing_pages_csv_path,
     bing_queries_csv_path,
@@ -39,6 +40,7 @@ from utils.dates import month_range
 from utils.ga4_csv import ga4_csv_path, write_ga4_rows_to_csv
 from utils.pages_csv import pages_csv_path, write_page_rows_to_csv
 from utils.queries_csv import queries_csv_path, write_query_rows_to_csv
+from utils.sitemap_csv import sitemap_csv_path, write_sitemap_rows_to_csv
 
 logging.basicConfig(
     level=logging.INFO,
@@ -130,6 +132,12 @@ def streams_for(site: Site) -> tuple[Stream, ...]:
             fetch=partial(fetch_bing_page_data, site_url=site.bing_site_url),
             csv_path=partial(bing_pages_csv_path, site),
             write_rows=partial(write_bing_page_rows_to_csv, site),
+        ),
+        Stream(
+            label=f"{site.name} {Provider.SITEMAP.value}",
+            fetch=partial(fetch_sitemap_data, sitemap_url=site.sitemap_url),
+            csv_path=partial(sitemap_csv_path, site),
+            write_rows=partial(write_sitemap_rows_to_csv, site),
         ),
         *[ga4_stream(site, report) for report in GA4_REPORTS],
     )

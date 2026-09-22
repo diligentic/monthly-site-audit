@@ -23,6 +23,7 @@ class Site:
     name: str
     gsc_site_url: str
     bing_site_url: str
+    sitemap_url: str
     schedule: Schedule
     history_months: int
     always_fetch_months: int
@@ -40,6 +41,7 @@ DILIGENTIC = Site(
     name="Diligentic",
     gsc_site_url="sc-domain:diligentic.ca",
     bing_site_url="https://diligentic.ca/",
+    sitemap_url="https://diligentic.ca/sitemap.xml",
     schedule=Schedule.MONTHLY,
     history_months=2,
     always_fetch_months=1,
@@ -50,6 +52,7 @@ AJAYKUMAR = Site(
     name="AjayKumar",
     gsc_site_url="sc-domain:ajaykumar.ca",
     bing_site_url="https://ajaykumar.ca/",
+    sitemap_url="https://ajaykumar.ca/sitemap.xml",
     schedule=Schedule.QUARTERLY,
     history_months=6,
     always_fetch_months=3,
