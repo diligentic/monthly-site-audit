@@ -1,20 +1,22 @@
-# Performance audit (Search Console + GA4)
+# Performance audit (Search Console + Bing + GA4)
 
-Collects performance data from Google Search Console (queries, pages) and
-Google Analytics 4 (traffic by source/medium) for multiple sites on a monthly
-or quarterly schedule, storing one CSV file per site, month, and data stream.
+Collects performance data from Google Search Console and Bing Webmaster
+(queries, pages), plus Google Analytics 4 (traffic by source/medium), for
+multiple sites on a monthly or quarterly schedule. It stores one CSV file per
+site, month, and data stream.
 
 Set these values in `.env` before running the program:
 
 ```env
 GSC_API_KEY=your-google-api-key
 GSC_BEARER_TOKEN=your-oauth-2-access-token
+BING_API_KEY=your-bing-webmaster-api-key
 GA4_PROPERTY_ID_DILIGENTIC=your-diligentic-ga4-property-id
 GA4_PROPERTY_ID_AJAYKUMAR=your-ajaykumar-ga4-property-id
 ```
 
-GA4 reuses the Search Console API key and OAuth bearer token; only the GA4
-property ID (from GA4 Admin → Property Settings) is needed per site.
+GA4 reuses the Search Console API key and OAuth bearer token. Bing uses its
+own API key, shared by both sites.
 
 Run the audit with:
 
@@ -45,6 +47,9 @@ data/
 │   │   ├── pages_2026-08.csv
 │   │   ├── canada_queries_2026-08.csv
 │   │   └── canada_pages_2026-08.csv
+│   ├── Bing/
+│   │   ├── queries_2026-08.csv
+│   │   └── pages_2026-08.csv
 │   └── GA4/
 │       ├── traffic_acquisition_2026-08.csv
 │       ├── landing_2026-08.csv
@@ -55,6 +60,9 @@ data/
     │   ├── pages_2026-07.csv
     │   ├── canada_queries_2026-07.csv
     │   └── canada_pages_2026-07.csv
+    ├── Bing/
+    │   ├── queries_2026-07.csv
+    │   └── pages_2026-07.csv
     └── GA4/
         ├── traffic_acquisition_2026-07.csv
         ├── landing_2026-07.csv
@@ -63,12 +71,15 @@ data/
 
 ## Streams
 
-Each month produces seven CSV files per site:
+Each month produces nine CSV files per site:
 
 - **GSC queries** / **GSC pages**: all traffic, columns
   `query,clicks,impressions,ctr,position` / `page,clicks,impressions,ctr,position`.
 - **GSC Canada queries** / **GSC Canada pages**: filtered with
   `dimensionFilterGroups` (`country equals CAN`), same columns.
+- **Bing queries** / **Bing pages**: fetched from `GetQueryStats` and
+  `GetPageStats`, respectively. Bing's dated rows are filtered to the requested
+  month and aggregated by query/page; columns match the GSC CSVs.
 - **GA4 traffic acquisition**: `traffic_acquisition_YYYY-MM.csv` from the GA4
   `runReport` endpoint (dimension `sessionSourceMedium`), columns
   `session_source_medium,sessions,engagedSessions,engagementRate,averageSessionDuration,keyEvents,sessionKeyEventRate`.

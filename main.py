@@ -18,11 +18,22 @@ from constants.sites import (
     Site,
 )
 from constants.sources import Provider
+from services.bing import (
+    fetch_page_data as fetch_bing_page_data,
+    fetch_query_data as fetch_bing_query_data,
+    validate_bing_credentials,
+)
 from services.ga4 import fetch_ga4_data, validate_ga4_credentials
 from services.search_console import (
     fetch_page_data,
     fetch_query_data,
     validate_credentials,
+)
+from utils.bing_csv import (
+    bing_pages_csv_path,
+    bing_queries_csv_path,
+    write_bing_page_rows_to_csv,
+    write_bing_query_rows_to_csv,
 )
 from utils.dates import month_range
 from utils.ga4_csv import ga4_csv_path, write_ga4_rows_to_csv
@@ -108,6 +119,18 @@ def streams_for(site: Site) -> tuple[Stream, ...]:
                 country=COUNTRY_FILTER_EXPRESSION,
             ),
         ),
+        Stream(
+            label=f"{site.name} {Provider.BING.value} query",
+            fetch=partial(fetch_bing_query_data, site_url=site.bing_site_url),
+            csv_path=partial(bing_queries_csv_path, site),
+            write_rows=partial(write_bing_query_rows_to_csv, site),
+        ),
+        Stream(
+            label=f"{site.name} {Provider.BING.value} page",
+            fetch=partial(fetch_bing_page_data, site_url=site.bing_site_url),
+            csv_path=partial(bing_pages_csv_path, site),
+            write_rows=partial(write_bing_page_rows_to_csv, site),
+        ),
         *[ga4_stream(site, report) for report in GA4_REPORTS],
     )
 
@@ -189,6 +212,7 @@ def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     load_dotenv()
     validate_credentials()
+    validate_bing_credentials()
     validate_ga4_credentials(SITES)
     today = args.date or datetime.now(UTC).date()
 

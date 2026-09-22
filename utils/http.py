@@ -10,7 +10,7 @@ def build_retry_session() -> requests.Session:
         total=3,
         backoff_factor=0.5,
         status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset({"POST"}),
+        allowed_methods=frozenset({"GET", "POST"}),
     )
     adapter = HTTPAdapter(max_retries=retry_policy)
     session = requests.Session()

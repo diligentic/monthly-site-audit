@@ -22,6 +22,7 @@ class Schedule(Enum):
 class Site:
     name: str
     gsc_site_url: str
+    bing_site_url: str
     schedule: Schedule
     history_months: int
     always_fetch_months: int
@@ -38,6 +39,7 @@ class Site:
 DILIGENTIC = Site(
     name="Diligentic",
     gsc_site_url="sc-domain:diligentic.ca",
+    bing_site_url="https://diligentic.ca/",
     schedule=Schedule.MONTHLY,
     history_months=2,
     always_fetch_months=1,
@@ -47,6 +49,7 @@ DILIGENTIC = Site(
 AJAYKUMAR = Site(
     name="AjayKumar",
     gsc_site_url="sc-domain:ajaykumar.ca",
+    bing_site_url="https://ajaykumar.ca/",
     schedule=Schedule.QUARTERLY,
     history_months=6,
     always_fetch_months=3,
