@@ -11,5 +11,4 @@ wheels/
 
 # Local environment and generated artifacts
 .env
-.env
 .venv

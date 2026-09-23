@@ -52,6 +52,8 @@ persistent disk.
 |---|---|---|
 | `GET` | `/healthz` | Liveness probe (no auth). |
 | `POST` | `/api/v1/audit/runs` | Start an audit in the background. Returns `202` with the `run_id`, or `409` if a run is already in progress. |
+| `GET` | `/api/v1/data` | List every collected file, relative to the storage root. |
+| `GET` | `/api/v1/data/{path}` | Download a collected file (e.g. `Diligentic/GSC/queries_2026-09.csv`). |
 
 When `AUDIT_API_KEY` is set in the environment, requests must send it as the
 `X-Api-Key` header (except `/healthz`). Start a run:
@@ -61,6 +63,13 @@ curl -X POST http://localhost:8000/api/v1/audit/runs \
   -H "X-Api-Key: ${AUDIT_API_KEY}" -H "Content-Type: application/json" \
   -d '{}'
 # {"run_id":"...","status":"running"}
+```
+
+Download a collected CSV (list paths first with `GET /api/v1/data`):
+
+```bash
+curl -o queries.csv "http://localhost:8000/api/v1/data/Diligentic/GSC/queries_2026-09.csv" \
+  -H "X-Api-Key: ${AUDIT_API_KEY}"
 ```
 
 The optional JSON body accepts `site` (a site name) and `date` (an anchor date,
