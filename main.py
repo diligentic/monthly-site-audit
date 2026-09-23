@@ -23,6 +23,7 @@ from services.bing import (
     fetch_query_data as fetch_bing_query_data,
     validate_bing_credentials,
 )
+from services.crawl import fetch_crawl_data
 from services.ga4 import fetch_ga4_data, validate_ga4_credentials
 from services.search_console import (
     fetch_page_data,
@@ -38,7 +39,9 @@ from utils.bing_csv import (
     write_bing_query_rows_to_csv,
 )
 from utils.dates import month_range
+from utils.crawl_csv import crawl_csv_path, write_crawl_rows_to_csv
 from utils.ga4_csv import ga4_csv_path, write_ga4_rows_to_csv
+from utils.image_csv import image_csv_path, write_image_rows_to_csv
 from utils.pages_csv import pages_csv_path, write_page_rows_to_csv
 from utils.queries_csv import queries_csv_path, write_query_rows_to_csv
 from utils.sitemap_csv import sitemap_csv_path, write_sitemap_rows_to_csv
@@ -60,6 +63,7 @@ class Stream:
     fetch: Callable[..., dict[str, Any]]
     csv_path: Callable[..., Path]
     write_rows: Callable[..., Path]
+    response_field: str = "rows"
 
 
 def ga4_stream(site: Site, report: GA4Report) -> Stream:
@@ -145,6 +149,19 @@ def streams_for(site: Site) -> tuple[Stream, ...]:
             write_rows=partial(write_sitemap_rows_to_csv, site),
         ),
         Stream(
+            label=f"{site.name} {Provider.CRAWL.value} pages",
+            fetch=partial(fetch_crawl_data, site_url=site.bing_site_url),
+            csv_path=partial(crawl_csv_path, site),
+            write_rows=partial(write_crawl_rows_to_csv, site),
+        ),
+        Stream(
+            label=f"{site.name} {Provider.IMAGES.value}",
+            fetch=partial(fetch_crawl_data, site_url=site.bing_site_url),
+            csv_path=partial(image_csv_path, site),
+            write_rows=partial(write_image_rows_to_csv, site),
+            response_field="image_rows",
+        ),
+        Stream(
             label=f"{site.name} Web Core Vitals",
             fetch=partial(fetch_web_core_vitals_data, site_url=site.bing_site_url),
             csv_path=partial(web_core_vitals_csv_path, site),
@@ -174,7 +191,7 @@ def ensure_month_data(
         return 0
 
     response = stream.fetch(start_date=month_start, end_date=month_end)
-    rows = response.get("rows") or []
+    rows = response.get(stream.response_field) or []
     stream.write_rows(rows, today, months_back)
     logger.info(
         "Stored %d %s rows for %s in %s",

@@ -7,3 +7,5 @@ class Provider(Enum):
     GA4 = "GA4"
     SITEMAP = "Sitemap"
     WEB_CORE_VITALS = "WebCoreVitals"
+    CRAWL = "Crawls"
+    IMAGES = "Images"
