@@ -30,6 +30,16 @@ logger = logging.getLogger(__name__)
 _CRAWL_CACHE: dict[str, dict[str, object]] = {}
 
 
+def clear_crawl_cache() -> None:
+    """Forget cached crawl snapshots so the next audit re-crawls the sites.
+
+    The cache exists so the page and image streams share one crawl snapshot per
+    run. A long-lived API process must not reuse a snapshot from a previous
+    run, so ``run_audit`` clears it before collecting any data.
+    """
+    _CRAWL_CACHE.clear()
+
+
 def normalize_url(url: str, base_url: str | None = None) -> str | None:
     absolute = urljoin(base_url or "", url.strip())
     absolute, _ = urldefrag(absolute)

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
+from os import getenv
 from pathlib import Path
 
 from constants.ga4 import (
@@ -8,7 +9,14 @@ from constants.ga4 import (
 )
 from constants.sources import Provider
 
-DATA_ROOT = Path(__file__).resolve().parent.parent / "data"
+DATA_ROOT_ENV_VAR = "DATA_ROOT"
+
+
+def _default_data_root() -> Path:
+    return Path(__file__).resolve().parent.parent / "data"
+
+
+DATA_ROOT = Path(getenv(DATA_ROOT_ENV_VAR, str(_default_data_root())))
 
 QUARTERLY_MONTHS = frozenset({1, 4, 7, 10})
 

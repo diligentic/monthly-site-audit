@@ -2,28 +2,47 @@ name: Monthly Audit
 
 on:
   schedule:
-    - cron: "30 3 5 * *"
+    - cron: "30 3 5 * *" # 5th of every month at 09:00 IST
 
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  monthly-audit:
+  run-audit:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Trigger audit
+        env:
+          AUDIT_API_URL: ${{ secrets.AUDIT_API_URL }}
+          AUDIT_API_KEY: ${{ secrets.AUDIT_API_KEY }}
+        run: |
+          set -euo pipefail
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
+          if [ -z "${AUDIT_API_URL}" ]; then
+            echo "::error::Secret AUDIT_API_URL is not set."
+            exit 1
+          fi
 
-      - name: Set up Python
-        run: uv python install
+          if [ -z "${AUDIT_API_KEY}" ]; then
+            echo "::error::Secret AUDIT_API_KEY is not set."
+            exit 1
+          fi
 
-      - name: Install dependencies
-        run: uv sync --locked
+          http_code=$(curl -sS \
+            -o /tmp/response.json \
+            -w "%{http_code}" \
+            -X POST "${AUDIT_API_URL}/api/v1/audit/runs" \
+            -H "X-Api-Key: ${AUDIT_API_KEY}" \
+            -H "Content-Type: application/json")
 
-      - name: Run monthly audit
-        run: uv run python main.py
+          cat /tmp/response.json
+
+          if [ "${http_code}" != "202" ]; then
+            echo "::error::Failed to start audit. HTTP ${http_code}."
+            exit 1
+          fi
+
+          echo "Audit triggered successfully."

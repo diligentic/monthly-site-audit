@@ -5,8 +5,9 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from constants import sites as sites_module
 from constants.crawl import CRAWL_COLUMNS, CRAWL_STORAGE_ROOT_ENV_VAR
-from constants.sites import DATA_ROOT, Site
+from constants.sites import Site
 from constants.sources import Provider
 from utils.dates import month_range
 from utils.get_env import ConfigurationError
@@ -20,7 +21,7 @@ def _storage_root() -> Path:
         raise ConfigurationError(
             f"Set {CRAWL_STORAGE_ROOT_ENV_VAR} to a persistent disk mount on Linux."
         )
-    return DATA_ROOT
+    return sites_module.DATA_ROOT
 
 
 def crawl_csv_path(site: Site, today: date | None = None, months_back: int = 1) -> Path:

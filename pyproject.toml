@@ -1,10 +1,12 @@
 [project]
 name = "mothly-site-audit"
 version = "0.1.0"
-description = "Add your description here"
+description = "Monthly search, analytics, crawl, and Core Web Vitals CSV collector with a FastAPI trigger API"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi[standard]>=0.141.1",
     "python-dotenv>=1.2.3",
     "requests>=2.34.2",
 ]
+

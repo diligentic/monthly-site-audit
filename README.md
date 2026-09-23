@@ -1,9 +1,9 @@
 # Performance audit (Search Console + Bing + GA4)
 
 Collects performance data from Google Search Console and Bing Webmaster
-(queries, pages), plus Google Analytics 4 (traffic by source/medium) and a
-monthly sitemap and Core Web Vitals snapshots, for multiple sites on a monthly
-or quarterly schedule. It stores one CSV file per site, month, and data stream.
+(queries, pages), Google Analytics 4 (traffic by source/medium), sitemap and
+Core Web Vitals snapshots, and an HTTP based internal page and image crawl.
+It stores one CSV file per site, month, and data stream.
 
 Set these values in `.env` before running the program:
 
@@ -20,11 +20,93 @@ own API key, shared by both sites. Sitemap data needs no credentials: it is
 fetched from the site's public `sitemap.xml` endpoint. Core Web Vitals uses the
 same Google API key as Search Console.
 
-Run the audit with:
+The built-in Python crawler does not use Screaming Frog, Wget, a commercial
+license, or a browser. On Render/Linux, attach a persistent disk and point
+`DATA_ROOT` (all CSV output) and `CRAWL_STORAGE_ROOT` (crawl/image files) at its
+mount path — for example `/var/data`. Crawl files are stored under each site's
+`Crawls/` and `Images/` folders. The crawler honors `robots.txt` when available;
+if it is missing or unreachable, it continues with same-site URL restrictions
+and a half-second request delay. `MAX_URLS`, request timeout, crawl timeout,
+redirect, retry, and response-size limits are defined in `constants/crawl.py`.
+
+Run the audit locally with:
 
 ```bash
 uv run python main.py
 ```
+
+The CLI and the HTTP API below share the exact same orchestration
+(`services/audit_runner.py`), so results are identical either way.
+
+## HTTP API
+
+The collection also runs on demand through a small FastAPI service (`app.py`).
+Nothing is fetched at startup or import time — data is only collected when a run
+is triggered. The GitHub Actions workflow posts to this API to start a run,
+which keeps data collection off the CI runner and on the server with the
+persistent disk.
+
+### Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/healthz` | Liveness probe (no auth). |
+| `POST` | `/api/v1/audit/runs` | Start an audit in the background. Returns `202` with the `run_id`, or `409` if a run is already in progress. |
+
+When `AUDIT_API_KEY` is set in the environment, requests must send it as the
+`X-Api-Key` header (except `/healthz`). Start a run:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/audit/runs \
+  -H "X-Api-Key: ${AUDIT_API_KEY}" -H "Content-Type: application/json" \
+  -d '{}'
+# {"run_id":"...","status":"running"}
+```
+
+The optional JSON body accepts `site` (a site name) and `date` (an anchor date,
+useful for testing). A run with an empty body audits every scheduled site; the
+quarterly site is skipped automatically outside its quarter months.
+
+### Deployment (Render)
+
+Native web service (not Docker), **Runtime: Python**:
+
+- **Build command** (installs uv, then installs dependencies):
+  ```bash
+  uv sync 
+  ```
+- **Start command** (single worker — run state lives in memory):
+  ```bash
+  export PATH="$HOME/.local/bin:$PATH"
+  uv run uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1
+  ```
+
+Attach a **persistent disk** (Render → Disks) and point the storage env vars at
+its mount path, e.g. mount the disk at `/var/data` and set on the service:
+
+```env
+DATA_ROOT=/var/data
+CRAWL_STORAGE_ROOT=/var/data
+AUDIT_API_KEY=<same value used by the GitHub Actions secret>
+```
+
+`DATA_ROOT` is where every provider writes its CSVs; `CRAWL_STORAGE_ROOT` is
+used for the crawl/image files.
+
+### GitHub Actions
+
+The workflow in `.github/workflows/monthly-audit.yml` starts a run on the 5th
+of each month (and on demand via `workflow_dispatch`). It validates that both
+secrets are set, posts to `POST /api/v1/audit/runs`, and fails the job if the
+API does not return `202`. Set two secrets on the repository:
+
+- `AUDIT_API_URL` — the deployed API base URL (no trailing slash).
+- `AUDIT_API_KEY` — the same value as `AUDIT_API_KEY` on the server.
+
+A run triggered twice while the first is still running returns `409`.
+Failures are written to the application logs and visible as missing or partial
+CSVs on the persistent disk; the audit does not block on them — one failing
+stream or month does not stop the rest of the run.
 
 ## Sites
 
@@ -58,6 +140,10 @@ data/
 │   │   └── events_2026-08.csv
 │   ├── Sitemap/
 │       └── sitemap_2026-08.csv
+│   ├── Crawls/
+│       └── 2026-08.csv
+│   ├── Images/
+│       └── images_2026-08.csv
 │   └── WebCoreVitals/
 │       └── web_core_vitals_2026-08.csv
 └── AjayKumar/
@@ -98,6 +184,13 @@ Each month produces eleven CSV files per site:
   as-is. Sitemap indexes (`<sitemapindex>` roots and nested indexes, up to a
   depth of four) are followed automatically, and URLs are deduplicated and
   sorted by URL.
+- **Crawl**: bounded HTTP crawl of internal URLs discovered through HTML links
+  and sitemap files. `Crawls/YYYY-MM.csv` contains URL, final URL, status,
+  content type, indexability directives, canonical URL, redirects, and unique
+  inlinks. `Images/images_YYYY-MM.csv` contains discovered internal image
+  status, type, size, and dimensions when available. This is an HTTP crawler,
+  not a browser renderer: links and metadata inserted only by JavaScript may
+  not be discovered.
 - **Web Core Vitals**: one PageSpeed Insights snapshot for each device strategy,
   stored together in `web_core_vitals_YYYY-MM.csv` with columns
   `device,lcp_ms,inp_ms,cls`. The data is shared per site rather than stored
@@ -120,6 +213,7 @@ the July 2026 files are missing, 1–31 July 2026. A quarterly AjayKumar run in
 January 2026 backfills July–December 2025; the April run then fetches only
 January–March 2026.
 
-Failures are logged per site/month and the script exits non-zero so the cron
-job alerts; one failing month, stream, or site does not stop the rest of the
-run.
+Failures are logged per site/month and the CLI exits non-zero so a cron job
+alerts; through the HTTP API, the same failures surface as a `failed` run with
+per-site/per-stream details. One failing month, stream, or site does not stop
+the rest of the run.
