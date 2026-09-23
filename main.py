@@ -30,6 +30,7 @@ from services.search_console import (
     validate_credentials,
 )
 from services.sitemap import fetch_sitemap_data
+from services.web_core_vitals import fetch_web_core_vitals_data
 from utils.bing_csv import (
     bing_pages_csv_path,
     bing_queries_csv_path,
@@ -41,6 +42,10 @@ from utils.ga4_csv import ga4_csv_path, write_ga4_rows_to_csv
 from utils.pages_csv import pages_csv_path, write_page_rows_to_csv
 from utils.queries_csv import queries_csv_path, write_query_rows_to_csv
 from utils.sitemap_csv import sitemap_csv_path, write_sitemap_rows_to_csv
+from utils.web_core_vitals_csv import (
+    web_core_vitals_csv_path,
+    write_web_core_vitals_rows_to_csv,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -139,6 +144,12 @@ def streams_for(site: Site) -> tuple[Stream, ...]:
             csv_path=partial(sitemap_csv_path, site),
             write_rows=partial(write_sitemap_rows_to_csv, site),
         ),
+        Stream(
+            label=f"{site.name} Web Core Vitals",
+            fetch=partial(fetch_web_core_vitals_data, site_url=site.bing_site_url),
+            csv_path=partial(web_core_vitals_csv_path, site),
+            write_rows=partial(write_web_core_vitals_rows_to_csv, site),
+        ),
         *[ga4_stream(site, report) for report in GA4_REPORTS],
     )
 
@@ -200,7 +211,7 @@ def is_due(site: Site, today: date) -> bool:
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Collect Search Console and GA4 performance data on a monthly/quarterly schedule."
+        description="Collect search, analytics, sitemap, and Core Web Vitals data on a monthly/quarterly schedule."
     )
     parser.add_argument(
         "--site",

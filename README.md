@@ -2,8 +2,8 @@
 
 Collects performance data from Google Search Console and Bing Webmaster
 (queries, pages), plus Google Analytics 4 (traffic by source/medium) and a
-monthly sitemap snapshot, for multiple sites on a monthly or quarterly
-schedule. It stores one CSV file per site, month, and data stream.
+monthly sitemap and Core Web Vitals snapshots, for multiple sites on a monthly
+or quarterly schedule. It stores one CSV file per site, month, and data stream.
 
 Set these values in `.env` before running the program:
 
@@ -17,7 +17,8 @@ GA4_PROPERTY_ID_AJAYKUMAR=your-ajaykumar-ga4-property-id
 
 GA4 reuses the Search Console API key and OAuth bearer token. Bing uses its
 own API key, shared by both sites. Sitemap data needs no credentials: it is
-fetched from the site's public `sitemap.xml` endpoint.
+fetched from the site's public `sitemap.xml` endpoint. Core Web Vitals uses the
+same Google API key as Search Console.
 
 Run the audit with:
 
@@ -55,8 +56,10 @@ data/
 │   │   ├── traffic_acquisition_2026-08.csv
 │   │   ├── landing_2026-08.csv
 │   │   └── events_2026-08.csv
-│   └── Sitemap/
+│   ├── Sitemap/
 │       └── sitemap_2026-08.csv
+│   └── WebCoreVitals/
+│       └── web_core_vitals_2026-08.csv
 └── AjayKumar/
     ├── GSC/
     │   ├── queries_2026-07.csv
@@ -70,13 +73,15 @@ data/
     │   ├── traffic_acquisition_2026-07.csv
     │   ├── landing_2026-07.csv
     │   └── events_2026-07.csv
-    └── Sitemap/
+    ├── Sitemap/
         └── sitemap_2026-07.csv
+    └── WebCoreVitals/
+        └── web_core_vitals_2026-07.csv
 ```
 
 ## Streams
 
-Each month produces ten CSV files per site:
+Each month produces eleven CSV files per site:
 
 - **GSC queries** / **GSC pages**: all traffic, columns
   `query,clicks,impressions,ctr,position` / `page,clicks,impressions,ctr,position`.
@@ -93,6 +98,10 @@ Each month produces ten CSV files per site:
   as-is. Sitemap indexes (`<sitemapindex>` roots and nested indexes, up to a
   depth of four) are followed automatically, and URLs are deduplicated and
   sorted by URL.
+- **Web Core Vitals**: one PageSpeed Insights snapshot for each device strategy,
+  stored together in `web_core_vitals_YYYY-MM.csv` with columns
+  `device,lcp_ms,inp_ms,cls`. The data is shared per site rather than stored
+  under GSC, Bing, or GA4. A missing lab metric is recorded as an empty cell.
 - **GA4 traffic acquisition**: `traffic_acquisition_YYYY-MM.csv` from the GA4
   `runReport` endpoint (dimension `sessionSourceMedium`), columns
   `session_source_medium,sessions,engagedSessions,engagementRate,averageSessionDuration,keyEvents,sessionKeyEventRate`.
