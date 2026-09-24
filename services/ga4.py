@@ -9,8 +9,9 @@ from constants.api_urls import (
     GOOGLE_ANALYTICS_DATA_BASE_URL,
 )
 from constants.ga4 import GA4Report
-from constants.search_console import GSC_API_KEY_ENV_VAR, GSC_BEARER_TOKEN_ENV_VAR
+from constants.search_console import GSC_API_KEY_ENV_VAR
 from constants.sites import Site
+from services.oauth import get_access_token, validate_oauth_credentials
 from utils.get_env import _get_env
 from utils.http import REQUEST_TIMEOUT_SECONDS, build_retry_session
 
@@ -43,7 +44,7 @@ def fetch_ga4_data(
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
     api_key = _get_env(GSC_API_KEY_ENV_VAR)
-    bearer_token = _get_env(GSC_BEARER_TOKEN_ENV_VAR)
+    bearer_token = get_access_token()
     property_id = _get_env(property_id_env_var)
 
     request_url = (
@@ -81,6 +82,6 @@ def fetch_ga4_data(
 
 def validate_ga4_credentials(sites: list[Site]) -> None:
     _get_env(GSC_API_KEY_ENV_VAR)
-    _get_env(GSC_BEARER_TOKEN_ENV_VAR)
+    validate_oauth_credentials()
     for site in sites:
         _get_env(site.ga4_property_id_env_var)

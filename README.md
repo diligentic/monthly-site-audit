@@ -44,7 +44,9 @@ Set these values in `.env` before running the program:
 
 ```env
 GSC_API_KEY=your-google-api-key
-GSC_BEARER_TOKEN=your-oauth-2-access-token
+GOOGLE_CLIENT_ID=your_oauth_client_id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your_oauth_client_secret
+GOOGLE_REFRESH_TOKEN=your_oauth_refresh_token
 BING_API_KEY=your-bing-webmaster-api-key
 GA4_PROPERTY_ID_DILIGENTIC=your-diligentic-ga4-property-id
 GA4_PROPERTY_ID_AJAYKUMAR=your-ajaykumar-ga4-property-id
@@ -57,8 +59,13 @@ GOOGLE_DRIVE_REFRESH_TOKEN=your_refresh_token
 GOOGLE_DRIVE_ROOT_FOLDER_ID=
 ```
 
-GA4 reuses the Search Console API key and OAuth bearer token. Bing uses its
-own API key, shared by both sites. Sitemap data needs no credentials: it is
+GA4 reuses the Search Console API key and the Google OAuth credentials above.
+The application refreshes access tokens automatically; no manually generated
+access token is required. The refresh token must be authorized for the Google
+Search Console read-only, Google Analytics read-only, and Google Drive
+`drive.file` scopes. Google Drive
+uploads continue to use the separate Drive OAuth variables below. Bing uses
+its own API key, shared by both sites. Sitemap data needs no credentials: it is
 fetched from the site's public `sitemap.xml` endpoint. Core Web Vitals uses the
 same Google API key as Search Console.
 

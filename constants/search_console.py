@@ -12,4 +12,3 @@ def country_file_prefix(country: str | None) -> str:
 
 
 GSC_API_KEY_ENV_VAR = "GSC_API_KEY"
-GSC_BEARER_TOKEN_ENV_VAR = "GSC_BEARER_TOKEN"

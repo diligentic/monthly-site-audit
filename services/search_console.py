@@ -10,11 +10,11 @@ from constants.api_urls import (
 )
 from constants.search_console import (
     GSC_API_KEY_ENV_VAR,
-    GSC_BEARER_TOKEN_ENV_VAR,
     SEARCH_ANALYTICS_DIMENSIONS,
     SEARCH_ANALYTICS_PAGE_DIMENSIONS,
     SEARCH_ANALYTICS_ROW_LIMIT,
 )
+from services.oauth import get_access_token, validate_oauth_credentials
 from utils.get_env import _get_env
 from utils.http import REQUEST_TIMEOUT_SECONDS, build_retry_session
 
@@ -60,7 +60,7 @@ def _fetch_metrics(
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
     api_key = _get_env(GSC_API_KEY_ENV_VAR)
-    bearer_token = _get_env(GSC_BEARER_TOKEN_ENV_VAR)
+    bearer_token = get_access_token()
 
     request_payload = _build_query_payload(
         start_date, end_date, dimensions, country=country
@@ -102,7 +102,7 @@ def _fetch_metrics(
 
 def validate_credentials() -> None:
     _get_env(GSC_API_KEY_ENV_VAR)
-    _get_env(GSC_BEARER_TOKEN_ENV_VAR)
+    validate_oauth_credentials()
 
 
 def fetch_query_data(
