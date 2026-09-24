@@ -7,8 +7,8 @@ from google.oauth2.credentials import Credentials
 
 from utils.get_env import ConfigurationError, _get_env
 
-CLIENT_ID_ENV_VAR = "GOOGLE_CLIENT_ID"
-CLIENT_SECRET_ENV_VAR = "GOOGLE_CLIENT_SECRET"
+CLIENT_ID_ENV_VAR = "GOOGLE_OAUTH_CLIENT_ID"
+CLIENT_SECRET_ENV_VAR = "GOOGLE_OAUTH_CLIENT_SECRET"
 REFRESH_TOKEN_ENV_VAR = "GOOGLE_REFRESH_TOKEN"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 
@@ -41,7 +41,7 @@ def get_access_token() -> str:
             credentials.refresh(Request())
     except Exception as error:
         raise ConfigurationError(
-            "Unable to obtain a Google access token. Verify GOOGLE_CLIENT_ID, "
+            "Unable to obtain a Google access token. Verify GOOGLE_OAUTH_CLIENT_ID, "
             "GOOGLE_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN and confirm that "
             "the refresh token grants the required Google API scopes."
         ) from error

@@ -44,17 +44,13 @@ Set these values in `.env` before running the program:
 
 ```env
 GSC_API_KEY=your-google-api-key
-GOOGLE_CLIENT_ID=your_oauth_client_id.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=your_oauth_client_secret
-GOOGLE_REFRESH_TOKEN=your_oauth_refresh_token
 BING_API_KEY=your-bing-webmaster-api-key
 GA4_PROPERTY_ID_DILIGENTIC=your-diligentic-ga4-property-id
 GA4_PROPERTY_ID_AJAYKUMAR=your-ajaykumar-ga4-property-id
 
-# Google Drive upload — OAuth 2.0 (personal account)
 GOOGLE_OAUTH_CLIENT_ID=your_client_id.apps.googleusercontent.com
 GOOGLE_OAUTH_CLIENT_SECRET=your_client_secret
-GOOGLE_DRIVE_REFRESH_TOKEN=your_refresh_token
+GOOGLE_REFRESH_TOKEN=your_refresh_token
 # Optional: store data inside this folder id instead of the top of My Drive
 GOOGLE_DRIVE_ROOT_FOLDER_ID=
 ```
