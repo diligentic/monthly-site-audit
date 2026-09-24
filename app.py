@@ -4,13 +4,17 @@ import secrets
 import threading
 import uuid
 from datetime import date as date_type
+from urllib.parse import quote
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
+from constants.sources import Provider
 from constants.sites import SITES
 from services.audit_runner import run_audit
+from services.drive import GoogleDriveError, GoogleDriveStorage
+from utils.get_env import ConfigurationError
 
 load_dotenv()
 
@@ -149,3 +153,62 @@ def create_run(payload: RunRequest | None = None) -> RunResponse:
             detail=f"An audit run is already in progress (run {error}).",
         ) from error
     return RunResponse(run_id=run_id, status="running")
+
+
+@app.get(
+    "/api/v1/drive/files",
+    tags=["drive"],
+    dependencies=[Depends(_require_api_key)],
+    responses={404: {"description": "The requested file was not found."}},
+)
+def download_drive_file(
+    site: str = Query(..., description="Site folder, for example Diligentic."),
+    provider: str = Query(..., description="Data folder, for example GSC or GA4."),
+    file_name: str = Query(
+        ..., min_length=1, description="Exact file name, including extension."
+    ),
+) -> Response:
+    """Download a CSV from ``audit_data/<site>/<provider>/<file_name>``."""
+    site_names = {configured_site.name for configured_site in SITES}
+    if site not in site_names:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Unknown site {site!r}. Choices: {', '.join(sorted(site_names))}.",
+        )
+
+    provider_names = {configured_provider.value for configured_provider in Provider}
+    if provider not in provider_names:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Unknown provider {provider!r}. Choices: {', '.join(sorted(provider_names))}.",
+        )
+    if file_name in {".", ".."} or "/" in file_name or "\\" in file_name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="file_name must be a file name, not a path.",
+        )
+
+    relative_path = f"{site}/{provider}/{file_name}"
+    try:
+        downloaded_name, content = GoogleDriveStorage().download_file(relative_path)
+    except FileNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="The requested file was not found in Google Drive.",
+        ) from error
+    except (GoogleDriveError, ConfigurationError) as error:
+        logger.exception("Google Drive download failed for %s", relative_path)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to retrieve the requested file from Google Drive.",
+        ) from error
+
+    return Response(
+        content=content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{quote(downloaded_name, safe='')}"
+            )
+        },
+    )

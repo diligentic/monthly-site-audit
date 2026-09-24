@@ -7,6 +7,7 @@ from google.api_core.exceptions import GoogleAPICallError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 
 from utils.get_env import ConfigurationError, _get_env
@@ -112,6 +113,36 @@ class GoogleDriveStorage:
         """Return whether a CSV already exists at ``relative_path``."""
         return self._resolve_file(relative_path) is not None
 
+    def download_file(self, relative_path: str) -> tuple[str, bytes]:
+        """Download a file below the audit root and return its name and bytes.
+
+        The path is relative to ``audit_data`` (for example
+        ``Diligentic/GSC/queries_2026-09.csv``). Only files in the configured
+        audit tree can be resolved by this method.
+        """
+        normalized_path = relative_path.strip("/")
+        if not normalized_path or any(
+            part in {"", ".", ".."} for part in normalized_path.split("/")
+        ):
+            raise ValueError("relative_path must be a non-empty path below the audit root")
+
+        file_info = self._resolve_file(normalized_path)
+        if file_info is None:
+            raise FileNotFoundError(normalized_path)
+
+        try:
+            content = self._service.files().get_media(fileId=file_info["id"]).execute()
+        except (GoogleAPICallError, HttpError, OSError) as error:
+            raise GoogleDriveError(
+                f"Failed to download {normalized_path!r} from Google Drive: "
+                f"{_error_message(error)}"
+            ) from error
+        if not isinstance(content, bytes):
+            raise GoogleDriveError(
+                f"Google Drive returned an unexpected response for {normalized_path!r}."
+            )
+        return normalized_path.rsplit("/", 1)[-1], content
+
     def upload_csv(self, relative_path: str, content: bytes) -> None:
         """Create or update a CSV at ``relative_path`` on Google Drive.
 
@@ -152,7 +183,7 @@ class GoogleDriveStorage:
                 )
                 self._file_cache[(folder_id, filename)] = created["id"]
                 logger.info("Uploaded Google Drive file %s", relative_path)
-        except GoogleAPICallError as error:
+        except (GoogleAPICallError, HttpError) as error:
             raise GoogleDriveError(
                 f"Failed to upload {relative_path!r} to Google Drive: "
                 f"{_error_message(error)}"
@@ -216,7 +247,7 @@ class GoogleDriveStorage:
                 )
                 .execute()
             )
-        except GoogleAPICallError as error:
+        except (GoogleAPICallError, HttpError) as error:
             raise GoogleDriveError(
                 f"Failed to create Google Drive folder {name!r}: "
                 f"{_error_message(error)}"
@@ -255,7 +286,7 @@ class GoogleDriveStorage:
             matched = response.get("files") or []
             if matched:
                 file_id = matched[0]["id"]
-        except GoogleAPICallError as error:
+        except (GoogleAPICallError, HttpError) as error:
             raise GoogleDriveError(
                 f"Failed to query Google Drive for {name!r}: {_error_message(error)}"
             ) from error
@@ -273,7 +304,7 @@ class GoogleDriveStorage:
                 )
                 .execute()
             )
-        except GoogleAPICallError as error:
+        except (GoogleAPICallError, HttpError) as error:
             raise GoogleDriveError(
                 f"Google Drive query failed: {_error_message(error)}"
             ) from error
