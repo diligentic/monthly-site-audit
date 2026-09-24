@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   run-audit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Trigger audit
@@ -31,14 +31,19 @@ jobs:
             exit 1
           fi
 
+          AUDIT_API_URL="${AUDIT_API_URL%/}"
+          AUDIT_ENDPOINT="${AUDIT_API_URL}/api/v1/audit/runs"
+
           http_code=$(curl -sS \
             -o /tmp/response.json \
             -w "%{http_code}" \
-            -X POST "${AUDIT_API_URL}/api/v1/audit/runs" \
+            -X POST "${AUDIT_ENDPOINT}" \
             -H "X-Api-Key: ${AUDIT_API_KEY}" \
-            -H "Content-Type: application/json")
+            -H "Content-Type: application/json" \
+            -d '{}' || true)
 
-          cat /tmp/response.json
+          echo "Requested: POST ${AUDIT_ENDPOINT}"
+          cat /tmp/response.json 2>/dev/null || echo "(no response body)"
 
           if [ "${http_code}" != "202" ]; then
             echo "::error::Failed to start audit. HTTP ${http_code}."
