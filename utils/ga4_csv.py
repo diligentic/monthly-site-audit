@@ -1,49 +1,27 @@
-import csv
-import os
 from datetime import date
-from pathlib import Path
 from typing import Any
 
 from constants.ga4 import GA4Report
-from constants.sites import Provider, Site
+from utils.csv_serializer import serialize_dict_rows
 from utils.dates import month_range
 
 
-def ga4_csv_path(
-    site: Site,
+def ga4_csv_name(
     report: GA4Report,
     today: date | None = None,
     months_back: int = 1,
-) -> Path:
+) -> str:
     month_start = month_range(today, months_back=months_back)[0]
-    return (
-        site.provider_dir(Provider.GA4) / f"{report.file_stem}_{month_start:%Y-%m}.csv"
-    )
+    return f"{report.file_stem}_{month_start:%Y-%m}.csv"
 
 
-def write_ga4_rows_to_csv(
-    site: Site,
-    report: GA4Report,
+def serialize_ga4_rows(
     rows: list[dict[str, Any]] | None,
-    today: date | None = None,
-    months_back: int = 1,
-) -> Path:
-    csv_path = ga4_csv_path(site, report, today, months_back)
+    report: GA4Report,
+) -> bytes:
     fieldnames = [report.key_column, *report.metric_columns]
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-
-    temp_path = csv_path.with_name(f"{csv_path.name}.tmp")
-    try:
-        with temp_path.open("w", encoding="utf-8", newline="") as csv_file:
-            writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-            writer.writeheader()
-            for row in rows or []:
-                writer.writerow(_flatten_ga4_row(row, report))
-        os.replace(temp_path, csv_path)
-    finally:
-        temp_path.unlink(missing_ok=True)
-
-    return csv_path
+    records = [_flatten_ga4_row(row, report) for row in rows or []]
+    return serialize_dict_rows(records, fieldnames)
 
 
 def _flatten_ga4_row(

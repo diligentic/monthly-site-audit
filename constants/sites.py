@@ -1,22 +1,11 @@
 from dataclasses import dataclass
 from enum import Enum
-from os import getenv
-from pathlib import Path
 
 from constants.ga4 import (
     GA4_PROPERTY_ID_AJAYKUMAR,
     GA4_PROPERTY_ID_DILIGENTIC,
 )
 from constants.sources import Provider
-
-DATA_ROOT_ENV_VAR = "DATA_ROOT"
-
-
-def _default_data_root() -> Path:
-    return Path(__file__).resolve().parent.parent / "data"
-
-
-DATA_ROOT = Path(getenv(DATA_ROOT_ENV_VAR, str(_default_data_root())))
 
 QUARTERLY_MONTHS = frozenset({1, 4, 7, 10})
 
@@ -38,11 +27,13 @@ class Site:
     ga4_property_id_env_var: str
 
     @property
-    def data_dir(self) -> Path:
-        return DATA_ROOT / self.name
+    def drive_folder_name(self) -> str:
+        """Root Drive folder name for this site, e.g. ``Diligentic``."""
+        return self.name
 
-    def provider_dir(self, provider: Provider) -> Path:
-        return self.data_dir / provider.value
+    def provider_folder_name(self, provider: Provider) -> str:
+        """Provider sub-folder name within the site folder, e.g. ``GSC``."""
+        return provider.value
 
 
 DILIGENTIC = Site(

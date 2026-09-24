@@ -7,10 +7,9 @@ from datetime import date as date_type
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, status
-from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from constants.sites import DATA_ROOT, SITES
+from constants.sites import SITES
 from services.audit_runner import run_audit
 
 load_dotenv()
@@ -26,11 +25,10 @@ AUDIT_API_KEY_ENV_VAR = "AUDIT_API_KEY"
 app = FastAPI(
     title="Monthly Site Audit API",
     description=(
-        "Triggers the monthly/quarterly site audit and serves the collected "
-        "CSVs. Data is only collected when a run is triggered; results are "
-        "written to the configured storage root."
+        "Triggers the monthly/quarterly site audit. Collected CSVs are "
+        "uploaded to Google Drive under the 'audit_data' folder; nothing is "
+        "stored on local disk. Data is only collected when a run is triggered."
     ),
-    version="0.3.0",
 )
 
 
@@ -77,8 +75,8 @@ class RunManager:
 
     Only the in-progress run id is kept in memory; it guards against two
     overlapping audits (which would double-crawl the sites). The manager is
-    intentionally stateless otherwise — results live on the storage root and
-    in the application logs.
+    intentionally stateless otherwise — results live on Google Drive and in
+    the application logs.
     """
 
     def __init__(self) -> None:
@@ -119,52 +117,6 @@ class RunManager:
 
 
 manager = RunManager()
-
-
-# ---------------------------------------------------------------------------
-# Data access
-# ---------------------------------------------------------------------------
-def _data_files() -> list[str]:
-    """Relative paths of every collected file under ``DATA_ROOT``, sorted."""
-    if not DATA_ROOT.is_dir():
-        return []
-    return sorted(
-        str(path.relative_to(DATA_ROOT))
-        for path in DATA_ROOT.rglob("*")
-        if path.is_file()
-    )
-
-
-@app.get(
-    "/api/v1/data",
-    tags=["data"],
-    dependencies=[Depends(_require_api_key)],
-)
-def list_data_files() -> dict[str, list[str]]:
-    """List every collected data file (e.g. ``Diligentic/GSC/queries_2026-09.csv``)."""
-    return {"files": _data_files()}
-
-
-@app.get(
-    "/api/v1/data/{file_path:path}",
-    tags=["data"],
-    dependencies=[Depends(_require_api_key)],
-)
-def download_data_file(file_path: str) -> FileResponse:
-    """Download a collected file, e.g. ``/api/v1/data/Diligentic/Crawls/2026-09.csv``."""
-    root = DATA_ROOT.resolve()
-    target = (root / file_path).resolve()
-    if not target.is_relative_to(root):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid path.",
-        )
-    if not target.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found.",
-        )
-    return FileResponse(target, filename=target.name)
 
 
 @app.get("/healthz", tags=["infra"])

@@ -1,34 +1,20 @@
 from datetime import date
-from pathlib import Path
 from typing import Any
 
 from constants.search_console import country_file_prefix
-from constants.sites import Provider, Site
+from utils.csv_serializer import serialize_metrics_rows
 from utils.dates import month_range
-from utils.metrics_csv import write_metrics_csv
 
 
-def queries_csv_path(
-    site: Site,
+def queries_csv_name(
     today: date | None = None,
     months_back: int = 1,
     *,
     country: str | None = None,
-) -> Path:
+) -> str:
     month_start = month_range(today, months_back=months_back)[0]
-    return (
-        site.provider_dir(Provider.GSC)
-        / f"{country_file_prefix(country)}queries_{month_start:%Y-%m}.csv"
-    )
+    return f"{country_file_prefix(country)}queries_{month_start:%Y-%m}.csv"
 
 
-def write_query_rows_to_csv(
-    site: Site,
-    rows: list[dict[str, Any]],
-    today: date | None = None,
-    months_back: int = 1,
-    *,
-    country: str | None = None,
-) -> Path:
-    csv_path = queries_csv_path(site, today, months_back, country=country)
-    return write_metrics_csv(rows, csv_path, key_column="query")
+def serialize_query_rows(rows: list[dict[str, Any]] | None) -> bytes:
+    return serialize_metrics_rows(rows, key_column="query")
