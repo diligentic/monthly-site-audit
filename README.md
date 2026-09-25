@@ -2,11 +2,11 @@
 
 Collects performance data from Google Search Console and Bing Webmaster
 (queries, pages), Google Analytics 4 (traffic by source/medium), sitemap and
-Core Web Vitals snapshots, a Screaming Frog SEO Spider internal crawl, and an
-HTTP based image crawl. Every stream is serialised to a CSV **in memory** and
-uploaded to **Google Drive** under the `audit_data/` folder. The Screaming
-Frog export lands in a temporary directory that is deleted right after the
-upload — no CSV is ever written to a persistent disk or a project folder.
+Core Web Vitals snapshots, plus five Screaming Frog SEO Spider tab exports and
+its Issues Overview report. Every stream is serialised to a CSV **in memory**
+and uploaded to **Google Drive** under the `audit_data/` folder. Screaming Frog
+artifacts land in a temporary directory that is deleted right after upload — no
+crawl CSV is ever written to a persistent disk or a project folder.
 
 ```
 audit_data/
@@ -26,10 +26,13 @@ audit_data/
 │   ├── Sitemap/
 │   │   └── sitemap_2026-08.csv
 │   ├── Crawls/
-│   │   ├── internal_2026-08.csv
-│   │   └── issues_2026-08.csv
-│   ├── Images/
-│   │   └── images_2026-08.csv
+│   │   └── 2026-08/
+│   │       ├── internal.csv
+│   │       ├── h1.csv
+│   │       ├── meta_description.csv
+│   │       ├── page_titles.csv
+│   │       ├── images.csv
+│   │       └── issues.csv
 │   └── WebCoreVitals/
 │       └── web_core_vitals_2026-08.csv
 └── AjayKumar/
@@ -37,6 +40,7 @@ audit_data/
     ├── Bing/...
     ├── GA4/...
     ├── Sitemap/...
+    ├── Crawls/...
     └── WebCoreVitals/...
 ```
 
@@ -71,14 +75,19 @@ its own API key, shared by both sites. Sitemap data needs no credentials: it is
 fetched from the site's public `sitemap.xml` endpoint. Core Web Vitals uses the
 same Google API key as Search Console.
 
-Uploads are idempotent: if a CSV already exists in its target folder it is
-updated in place instead of duplicated. Missing folders (`audit_data`, site
-folders, provider folders) are created automatically in your My Drive.
+Before collecting any stream, the runner checks its exact target path on Drive.
+An existing monthly CSV is left untouched and its source is not called; only
+missing CSVs are fetched and uploaded. Crawl files from the earlier flat
+`Crawls/<name>_YYYY-MM.csv` layout are moved (without downloading or refetching
+their contents) into `Crawls/YYYY-MM/<name>.csv` when the canonical file is
+missing. A migration never overwrites a canonical file. Missing folders
+(`audit_data`, site, provider, and month folders) are created automatically in
+your My Drive.
 
-Run the audit locally with:
+Run the full audit locally with:
 
 ```bash
-uv run fastapi run app.py
+uv run python main.py
 ```
 
 The CLI and the HTTP API below share the exact same orchestration
@@ -86,56 +95,61 @@ The CLI and the HTTP API below share the exact same orchestration
 
 ## Screaming Frog crawl
 
-The internal crawl is delegated to the **Screaming Frog SEO Spider** running
-headless as a subprocess (`services/screaming_frog.py`). Flow per run:
+The crawl is delegated to the **Screaming Frog SEO Spider** running headless as
+a subprocess (`services/screaming_frog.py`). It exports these required tabs:
+`Internal`, `H1`, `Meta Description`, `Page Titles`, and `Images`. It also runs
+the `Issues:All` bulk export and stores its single Issues Overview summary.
+Flow:
 
-1. Python creates a private temporary directory (`tempfile.TemporaryDirectory`).
-2. The CLI is launched with `--headless --crawl <site_url> --output-folder
-   <temp_dir> --export-tabs "Internal:All" --bulk-export "Issues:All"`.
-3. After the crawl exits `0`, the generated `internal_all.csv` and the Issues
-   Overview report (`issues_reports/issues_overview_report.csv`, a single
-   summary of every issue found) are located programmatically and read as raw
-   bytes. The remaining per-issue detail CSVs in `issues_reports/` are
-   discarded with the temporary directory.
-4. The bytes are uploaded to Google Drive under the site's `Crawls/` folder as
-   `internal_YYYY-MM.csv` and `issues_YYYY-MM.csv` — the names are chosen by
-   Python and are independent of Screaming Frog's own filenames. Uploads are
-   idempotent (update in place).
-5. The temporary directory is removed after the uploads — and also removed on
-   any crawl or upload failure, so nothing ever persists locally.
+1. Python checks the six target CSVs for the month on Google Drive. If all six
+   exist, that month's crawl is skipped entirely. Existing flat files are
+   migrated into the month folder first, without refetching them.
+2. For a month with missing output, Python creates a private temporary folder
+   and launches Screaming Frog once with `--export-tabs
+   "Internal:All,H1:All,Meta Description:All,Page Titles:All,Images:All"` and
+   `--bulk-export "Issues:All"`.
+3. The five tab CSVs and `issues_reports/issues_overview_report.csv` are
+   located programmatically and read as raw bytes. Missing outputs are
+   uploaded under `Crawls/YYYY-MM/` as `internal.csv`, `h1.csv`,
+   `meta_description.csv`, `page_titles.csv`, `images.csv`, and `issues.csv`.
+   Outputs already present on Drive are not uploaded again.
+4. The temporary folder is removed after the uploads and on every crawl or
+   upload failure, so crawl artifacts never persist locally.
 
-One crawl per site per run feeds both exports (the two streams share a
-per-site in-memory cache), so Screaming Frog is never launched twice. Note
-that `Issues:All` is a bulk export rather than an export tab in the CLI, so it
-must be passed via `--bulk-export`.
+All six streams share a per-site in-memory cache. If outputs are missing for
+more than one historical month, Screaming Frog still runs only once for that
+site during the audit run and the resulting bytes are reused for each missing
+month. It is launched again only for a later audit run that still has missing
+output.
 
-The executable comes from `SCREAMING_FROG_PATH` when set (e.g. the macOS app
-launcher) and otherwise from the `screamingfrogseospider` command on `PATH`
-(the Linux CLI), so the same code works locally and on Render. `main.py --site
-Diligentic` exercises this path; e.g. on macOS:
+The executable comes from `SCREAMING_FROG_PATH` when set (for example, the
+macOS app launcher) and otherwise from `screamingfrogseospider` on `PATH` (the
+Linux CLI), so the same code works locally and on Render. To run only the six
+required crawl outputs without calling the other audit sources:
 
 ```bash
 export SCREAMING_FROG_PATH="/Applications/Screaming Frog SEO Spider.app/Contents/MacOS/ScreamingFrogSEOSpiderLauncher"
-uv run python main.py --site Diligentic --date 2026-09-25
+uv run python main.py --crawl-only --site Diligentic --date 2026-09-25
 ```
 
-The `Images/` stream still uses the HTTP crawler; only the `Crawls/` exports
-(`internal_*.csv` and `issues_*.csv`) are powered by Screaming Frog.
+Omit `--date` to use today. Omit `--site` to process all sites that are due.
 
 ## HTTP API
 
 The collection also runs on demand through a small FastAPI service (`app.py`).
 Nothing is fetched at startup or import time — data is only collected when a run
 is triggered. The GitHub Actions workflow posts to this API to start a run,
-which keeps data collection off the CI runner and on the server. The API no
-longer serves CSVs: results are delivered straight to Google Drive.
+which keeps data collection off the CI runner and on the server. Results are
+delivered straight to Google Drive and can be downloaded through the protected
+Drive file endpoint.
 
 ### Endpoints
 
-| Method | Path                 | Description                                                                                                  |
-| ------ | -------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `GET`  | `/healthz`           | Liveness probe (no auth).                                                                                    |
-| `POST` | `/api/v1/audit/runs` | Start an audit in the background. Returns `202` with the `run_id`, or `409` if a run is already in progress. |
+| Method | Path                  | Description                                                                                                  |
+| ------ | --------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `GET`  | `/healthz`            | Liveness probe (no auth).                                                                                    |
+| `POST` | `/api/v1/audit/runs`  | Start an audit in the background. Returns `202` with the `run_id`, or `409` if a run is already in progress. |
+| `GET`  | `/api/v1/drive/files` | Download a stored CSV by site, provider, and provider-relative path.                                       |
 
 When `AUDIT_API_KEY` is set in the environment, requests must send it as the
 `X-Api-Key` header (except `/healthz`). Start a run:
@@ -145,6 +159,17 @@ curl -X POST http://localhost:8000/api/v1/audit/runs \
   -H "X-Api-Key: ${AUDIT_API_KEY}" -H "Content-Type: application/json" \
   -d '{}'
 # {"run_id":"...","status":"running"}
+```
+
+Download a crawl CSV from a month folder:
+
+```bash
+curl --get http://localhost:8000/api/v1/drive/files \
+  -H "X-Api-Key: ${AUDIT_API_KEY}" \
+  --data-urlencode "site=Diligentic" \
+  --data-urlencode "provider=Crawls" \
+  --data-urlencode "file_name=2026-08/h1.csv" \
+  -o h1.csv
 ```
 
 The optional JSON body accepts `site` (a site name) and `date` (an anchor date,
@@ -206,22 +231,22 @@ month does not stop the rest of the run.
 
 ## Sites
 
-| Site       | Search Console property   | GA4 property                     | Schedule                       | Window            | Always fetch    | Drive folder             |
-| ---------- | ------------------------- | -------------------------------- | ------------------------------ | ----------------- | --------------- | ------------------------ |
-| Diligentic | `sc-domain:diligentic.ca` | env `GA4_PROPERTY_ID_DILIGENTIC` | Monthly                        | previous 2 months | newest 1 month  | `audit_data/Diligentic/` |
-| AjayKumar  | `sc-domain:ajaykumar.ca`  | env `GA4_PROPERTY_ID_AJAYKUMAR`  | Quarterly (Jan, Apr, Jul, Oct) | previous 6 months | newest 3 months | `audit_data/AjayKumar/`  |
+| Site       | Search Console property   | GA4 property                     | Schedule                       | Window            | Drive folder             |
+| ---------- | ------------------------- | -------------------------------- | ------------------------------ | ----------------- | ------------------------ |
+| Diligentic | `sc-domain:diligentic.ca` | env `GA4_PROPERTY_ID_DILIGENTIC` | Monthly                        | previous 2 months | `audit_data/Diligentic/` |
+| AjayKumar  | `sc-domain:ajaykumar.ca`  | env `GA4_PROPERTY_ID_AJAYKUMAR`  | Quarterly (Jan, Apr, Jul, Oct) | previous 6 months | `audit_data/AjayKumar/`  |
 
-Within a site's window the **always-fetch** months (the newest data) are
-refetched on every run, while the older months are fetched only when their CSV
-is missing on Google Drive. The first run therefore backfills the whole window;
-later runs only fetch what is new since the previous run.
+Every month in the configured window is checked independently. Any exact CSV
+already on Google Drive is skipped and retained; no source is called for that
+file and no existing file is overwritten. The first run therefore backfills
+only missing files, and later runs collect only files that are still missing.
 
 Data is stored by site and data source (provider), so adding another provider
 only adds a new provider folder — see the tree at the top of this document.
 
 ## Streams
 
-Each month produces twelve CSV files per site:
+Each month produces up to seventeen CSV files per site:
 
 - **GSC queries** / **GSC pages**: all traffic, columns
   `query,clicks,impressions,ctr,position` / `page,clicks,impressions,ctr,position`.
@@ -238,19 +263,14 @@ Each month produces twelve CSV files per site:
   as-is. Sitemap indexes (`<sitemapindex>` roots and nested indexes, up to a
   depth of four) are followed automatically, and URLs are deduplicated and
   sorted by URL.
-- **Crawl**: headless **Screaming Frog SEO Spider** crawl of the site.
-  `Crawls/internal_YYYY-MM.csv` is the `Internal:All` export (Address, Content
-  Type, Status Code, Indexability, Titles, Headings, Canonicals, Inlinks,
-  Outlinks, Redirect URL, etc.) and `Crawls/issues_YYYY-MM.csv` is the Issues
-  Overview report (every issue found — name, type, priority, offending URL
-  count, percent of total, description and how to fix). Both are produced by
-  one subprocess crawl (the Issues report via the `Issues:All` bulk export)
-  into a temporary directory that is deleted right after the Google Drive
-  uploads. `Images/images_YYYY-MM.csv` is
-  produced by the in-house HTTP crawler and contains discovered internal image
-  status, type, size, and dimensions when available; this crawler is not a
-  browser renderer, so links and metadata inserted only by JavaScript may not
-  be discovered.
+- **Crawl**: one headless **Screaming Frog SEO Spider** crawl produces the five
+  required `:All` tab exports plus the Issues Overview report. They are stored
+  in `Crawls/YYYY-MM/` as `internal.csv` (`Internal`), `h1.csv` (`H1`),
+  `meta_description.csv` (`Meta Description`), `page_titles.csv`
+  (`Page Titles`), `images.csv` (`Images`), and `issues.csv` (`Issues`).
+  The original Screaming Frog column sets are preserved. Generated files are
+  read into memory, uploaded to Drive, and then removed with their temporary
+  directory.
 - **Web Core Vitals**: one PageSpeed Insights snapshot for each device strategy,
   stored together in `web_core_vitals_YYYY-MM.csv` with columns
   `device,lcp_ms,inp_ms,cls`. The data is shared per site rather than stored

@@ -23,7 +23,6 @@ class Site:
     sitemap_url: str
     schedule: Schedule
     history_months: int
-    always_fetch_months: int
     ga4_property_id_env_var: str
 
     @property
@@ -43,7 +42,6 @@ DILIGENTIC = Site(
     sitemap_url="https://diligentic.ca/sitemap.xml",
     schedule=Schedule.MONTHLY,
     history_months=2,
-    always_fetch_months=1,
     ga4_property_id_env_var=GA4_PROPERTY_ID_DILIGENTIC,
 )
 
@@ -54,7 +52,6 @@ AJAYKUMAR = Site(
     sitemap_url="https://ajaykumar.ca/sitemap.xml",
     schedule=Schedule.QUARTERLY,
     history_months=6,
-    always_fetch_months=3,
     ga4_property_id_env_var=GA4_PROPERTY_ID_AJAYKUMAR,
 )
 

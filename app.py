@@ -166,10 +166,15 @@ def download_drive_file(
     site: str = Query(..., description="Site folder, for example Diligentic."),
     provider: str = Query(..., description="Data folder, for example GSC or GA4."),
     file_name: str = Query(
-        ..., min_length=1, description="Exact file name, including extension."
+        ...,
+        min_length=1,
+        description=(
+            "Path relative to the provider folder, including extension; "
+            "for example 2026-08/h1.csv."
+        ),
     ),
 ) -> Response:
-    """Download a CSV from ``audit_data/<site>/<provider>/<file_name>``."""
+    """Download a CSV from the selected site and provider on Google Drive."""
     site_names = {configured_site.name for configured_site in SITES}
     if site not in site_names:
         raise HTTPException(
@@ -183,10 +188,16 @@ def download_drive_file(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Unknown provider {provider!r}. Choices: {', '.join(sorted(provider_names))}.",
         )
-    if file_name in {".", ".."} or "/" in file_name or "\\" in file_name:
+    path_parts = file_name.split("/")
+    if (
+        file_name.startswith("/")
+        or file_name.endswith("/")
+        or "\\" in file_name
+        or any(part in {"", ".", ".."} for part in path_parts)
+    ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="file_name must be a file name, not a path.",
+            detail="file_name must be a safe path relative to the provider folder.",
         )
 
     relative_path = f"{site}/{provider}/{file_name}"

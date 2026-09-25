@@ -1,27 +1,14 @@
-"""Run headless Screaming Frog SEO Spider crawls for the monthly audit.
+"""Run the required headless Screaming Frog SEO Spider exports.
 
-Screaming Frog writes its exports into a private temporary directory. The
-``Internal:All`` export tab CSV and the ``Issues:All`` bulk export's Issues
-Overview report are handed to the Google Drive uploader as raw bytes and the
-temporary directory is removed right after the uploads (or on any failure),
-so no crawl artifact ever persists locally or in the repository.
+Screaming Frog crawls each site once and writes the Internal, H1, Meta
+Description, Page Titles, and Images ``:All`` export tabs plus the Issues
+Overview bulk report. The generated CSVs are read into memory, uploaded to
+Google Drive by the audit runner, and then removed with the private temporary
+crawl directory. No crawl artifact is persisted locally.
 
-One crawl per site per run feeds both exports: the internal and issues
-streams share a per-site in-memory cache (cleared at the start of every audit
-run), mirroring the HTTP crawler's cache in ``services/crawl.py``. The cached
-values are bytes, so the temporary directory can be removed after the first
-stream uploads without affecting the second.
-
-Note that ``Issues:All`` is a bulk export, not an export tab: it writes one
-CSV per issue type into an ``issues_reports/`` folder. We upload only
-``issues_overview_report.csv`` (a single summary of every issue found) as the
-monthly ``issues_YYYY-MM.csv``; the per-issue detail CSVs are discarded with
-the temporary directory.
-
-The executable is resolved from ``SCREAMING_FROG_PATH`` when set (e.g. the
-macOS app launcher path) and otherwise from ``screamingfrogseospider`` on
-``PATH`` (the Linux CLI), so the same code runs locally on macOS and on
-Render/Linux.
+All required exports share a per-site cache so a crawl is launched only once
+for a site during an audit run, even when several output files or historical
+months are being stored. The cache is cleared before every run.
 """
 
 import logging
@@ -36,8 +23,10 @@ from constants.crawl import (
     SCREAMING_FROG_BULK_EXPORTS,
     SCREAMING_FROG_DEFAULT_EXECUTABLE,
     SCREAMING_FROG_EXPORT_TABS,
+    SCREAMING_FROG_EXPORTS,
     SCREAMING_FROG_ISSUES_OVERVIEW_REPORT,
     SCREAMING_FROG_PATH_ENV_VAR,
+    SCREAMING_FROG_TAB_EXPORTS,
     SCREAMING_FROG_TIMEOUT_ENV_VAR,
     SCREAMING_FROG_TIMEOUT_SECONDS,
 )
@@ -99,40 +88,50 @@ def _crawl_timeout() -> int:
         ) from error
 
 
-def _locate_export_csv(output_folder: Path, stem_prefix: str) -> Path:
-    """Find the ``<stem_prefix>_all*.csv`` export Screaming Frog wrote."""
-    matches = sorted(output_folder.glob(f"{stem_prefix}*.csv"))
-    if not matches:
-        produced = ", ".join(sorted(p.name for p in output_folder.iterdir()))
+def _locate_export_csv(output_folder: Path, export: str) -> Path:
+    """Find the CSV produced for a Screaming Frog ``:All`` export tab."""
+    try:
+        tab_name, stem = SCREAMING_FROG_TAB_EXPORTS[export]
+    except KeyError as error:
         raise ScreamingFrogError(
-            f"Screaming Frog produced no {stem_prefix} export in {output_folder}"
-            f" (files found: {produced or 'none'})"
+            f"{export!r} is not a Screaming Frog export tab"
+        ) from error
+    matches = sorted(
+        path
+        for path in output_folder.iterdir()
+        if path.is_file()
+        and path.suffix.lower() == ".csv"
+        and path.stem.lower().startswith(f"{stem.lower()}_")
+    )
+    if not matches:
+        produced = ", ".join(sorted(path.name for path in output_folder.iterdir()))
+        raise ScreamingFrogError(
+            f"Screaming Frog produced no {tab_name} export in {output_folder} "
+            f"(files found: {produced or 'none'})"
         )
+    expected_stem = f"{stem}_all".lower()
     for match in matches:
-        if match.stem.lower() == f"{stem_prefix}_all":
+        if match.stem.lower() == expected_stem:
             return match
     return matches[0]
 
 
 def _locate_issues_overview(output_folder: Path) -> Path:
-    """Find the Issues Overview report within the ``issues_reports`` folder.
-
-    The ``Issues:All`` bulk export writes one CSV per issue type into an
-    ``issues_reports/`` subfolder plus ``issues_overview_report.csv`` — a
-    single summary of every issue found (name, type, priority, URL count,
-    description and how to fix). We upload only that summary.
-    """
+    """Find the Issues Overview report written by the ``Issues:All`` export."""
     reports_dir = output_folder / "issues_reports"
     if not reports_dir.is_dir():
         raise ScreamingFrogError(
             f"Screaming Frog produced no issues_reports folder in {output_folder}"
         )
-    matches = sorted(reports_dir.glob(f"{SCREAMING_FROG_ISSUES_OVERVIEW_REPORT}*.csv"))
+    matches = sorted(
+        reports_dir.glob(f"{SCREAMING_FROG_ISSUES_OVERVIEW_REPORT}*.csv")
+    )
     if not matches:
-        produced = ", ".join(sorted(p.name for p in reports_dir.iterdir()))
+        produced = ", ".join(sorted(path.name for path in reports_dir.iterdir()))
         raise ScreamingFrogError(
-            f"Screaming Frog produced no {SCREAMING_FROG_ISSUES_OVERVIEW_REPORT}.csv "
-            f"in {reports_dir} (files found: {produced or 'none'})"
+            "Screaming Frog produced no "
+            f"{SCREAMING_FROG_ISSUES_OVERVIEW_REPORT}.csv in {reports_dir} "
+            f"(files found: {produced or 'none'})"
         )
     return matches[0]
 
@@ -142,19 +141,30 @@ def _run_crawl(site_url: str, output_folder: Path) -> None:
     command = [
         executable,
         "--headless",
-        "--crawl", site_url,
-        "--output-folder", str(output_folder),
-        "--export-tabs", SCREAMING_FROG_EXPORT_TABS,
-        "--bulk-export", SCREAMING_FROG_BULK_EXPORTS,
+        "--crawl",
+        site_url,
+        "--output-folder",
+        str(output_folder),
+        "--export-tabs",
+        SCREAMING_FROG_EXPORT_TABS,
+        "--bulk-export",
+        SCREAMING_FROG_BULK_EXPORTS,
     ]
-    logger.info("Crawl started site=%s executable=%s", site_url, executable)
+    timeout = _crawl_timeout()
+    logger.info(
+        "Crawl started site=%s executable=%s export_tabs=%s bulk_exports=%s",
+        site_url,
+        executable,
+        SCREAMING_FROG_EXPORT_TABS,
+        SCREAMING_FROG_BULK_EXPORTS,
+    )
     try:
         completed = subprocess.run(
             command,
             capture_output=True,
             text=True,
             errors="replace",
-            timeout=_crawl_timeout(),
+            timeout=timeout,
             check=False,
         )
     except OSError as error:
@@ -163,7 +173,7 @@ def _run_crawl(site_url: str, output_folder: Path) -> None:
         ) from error
     except subprocess.TimeoutExpired as error:
         raise ScreamingFrogError(
-            f"Screaming Frog crawl exceeded {_crawl_timeout()}s timeout"
+            f"Screaming Frog crawl exceeded {timeout}s timeout"
         ) from error
     if completed.returncode != 0:
         logger.error(
@@ -179,35 +189,45 @@ def _run_crawl(site_url: str, output_folder: Path) -> None:
     logger.info("Crawl completed site=%s", site_url)
 
 
-def _read_export_csv(csv_path: Path, label: str) -> bytes:
+def _read_export_csv(csv_path: Path, tab_name: str) -> bytes:
     content = csv_path.read_bytes()
     if not content:
-        raise ScreamingFrogError(f"Screaming Frog {label} export is empty: {csv_path}")
-    logger.info("%s CSV located: %s (%d bytes)", label.capitalize(), csv_path, len(content))
+        raise ScreamingFrogError(
+            f"Screaming Frog {tab_name} export is empty: {csv_path}"
+        )
+    logger.info(
+        "%s CSV located: %s (%d bytes)", tab_name, csv_path, len(content)
+    )
     return content
 
 
 def _run_and_cache(site_url: str) -> None:
-    """Run one crawl, read both exports into memory, and cache them per site.
+    """Run one crawl, read all required exports, and cache them per site.
 
-    Failures are cached too so a second stream does not re-run the crawl just
-    to fail again; the temporary directory is removed on failure here.
+    Failures are cached too so another export stream does not launch the same
+    crawl again just to fail. The temporary directory is removed immediately
+    on failure.
     """
     tmpdir = tempfile.TemporaryDirectory(prefix="screaming-frog-")
     output_folder = Path(tmpdir.name)
     logger.info("Screaming Frog crawl output folder: %s", output_folder)
     try:
         _run_crawl(site_url, output_folder)
-        internal = _read_export_csv(
-            _locate_export_csv(output_folder, "internal"), "internal"
-        )
-        issues = _read_export_csv(
-            _locate_issues_overview(output_folder), SCREAMING_FROG_ISSUES_OVERVIEW_REPORT
+        exports = {
+            export: _read_export_csv(
+                _locate_export_csv(output_folder, export), tab_name
+            )
+            for export, (tab_name, _) in SCREAMING_FROG_TAB_EXPORTS.items()
+        }
+        exports["issues"] = _read_export_csv(
+            _locate_issues_overview(output_folder),
+            SCREAMING_FROG_ISSUES_OVERVIEW_REPORT,
         )
     except Exception as error:
         tmpdir.cleanup()
         _CRAWL_CACHE[site_url] = {"error": error}
         raise
+
     cleaned = False
 
     def cleanup() -> None:
@@ -216,9 +236,11 @@ def _run_and_cache(site_url: str) -> None:
             return
         cleaned = True
         tmpdir.cleanup()
-        logger.info("Removed Screaming Frog temporary crawl storage: %s", output_folder)
+        logger.info(
+            "Removed Screaming Frog temporary crawl storage: %s", output_folder
+        )
 
-    _CRAWL_CACHE[site_url] = {"internal": internal, "issues": issues, "cleanup": cleanup}
+    _CRAWL_CACHE[site_url] = {**exports, "cleanup": cleanup}
 
 
 def _exports_for(site_url: str) -> dict[str, Any]:
@@ -231,24 +253,47 @@ def _exports_for(site_url: str) -> dict[str, Any]:
     return cached
 
 
-def fetch_internal_crawl(*, site_url: str, start_date=None, end_date=None) -> dict[str, Any]:
-    """Stream-compatible fetch: the ``Internal`` export of this run's crawl.
+def fetch_screaming_frog_export(
+    *,
+    export: str,
+    site_url: str,
+    start_date=None,
+    end_date=None,
+) -> dict[str, Any]:
+    """Return one required Screaming Frog export as raw CSV bytes.
 
-    Matches the audit runner's stream interface (``fetch(start_date,
-    end_date) -> dict``). The returned ``rows`` value is the raw CSV content;
-    ``cleanup`` removes the temporary crawl folder after the upload.
+    Dates are accepted so this function matches the audit stream interface;
+    Screaming Frog exports are point-in-time crawl snapshots.
     """
-    del start_date, end_date  # point-in-time snapshot; dates kept for audit compatibility
+    if export not in SCREAMING_FROG_EXPORTS:
+        choices = ", ".join(sorted(SCREAMING_FROG_EXPORTS))
+        raise ValueError(
+            f"Unknown Screaming Frog export {export!r}; choose one of {choices}."
+        )
+    del start_date, end_date
     cached = _exports_for(site_url)
-    return {"rows": cached["internal"], "cleanup": cached["cleanup"]}
+    return {"rows": cached[export], "cleanup": cached["cleanup"]}
 
 
-def fetch_issues_crawl(*, site_url: str, start_date=None, end_date=None) -> dict[str, Any]:
-    """Stream-compatible fetch: the Issues Overview report of this run's crawl.
+def fetch_internal_crawl(
+    *, site_url: str, start_date=None, end_date=None
+) -> dict[str, Any]:
+    """Backward-compatible stream wrapper for the ``Internal`` export."""
+    return fetch_screaming_frog_export(
+        export="internal",
+        site_url=site_url,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
-    Shares the crawl with :func:`fetch_internal_crawl` through the per-site
-    cache, so Screaming Frog runs exactly once per site per run.
-    """
-    del start_date, end_date  # point-in-time snapshot; dates kept for audit compatibility
-    cached = _exports_for(site_url)
-    return {"rows": cached["issues"], "cleanup": cached["cleanup"]}
+
+def fetch_issues_crawl(
+    *, site_url: str, start_date=None, end_date=None
+) -> dict[str, Any]:
+    """Backward-compatible stream wrapper for the Issues Overview report."""
+    return fetch_screaming_frog_export(
+        export="issues",
+        site_url=site_url,
+        start_date=start_date,
+        end_date=end_date,
+    )
