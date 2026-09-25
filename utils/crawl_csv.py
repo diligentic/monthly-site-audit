@@ -1,34 +1,44 @@
 from datetime import date
-from typing import Any
 
-from constants.crawl import CRAWL_COLUMNS
-from utils.csv_serializer import serialize_dict_rows
+from constants.crawl import SCREAMING_FROG_EXPORTS
 from utils.dates import month_range
 
-_CRAWL_HEADER_NAMES = {
-    "url": "URL",
-    "final_url": "Final URL",
-    "status": "Status Code",
-    "final_status": "Final Status Code",
-    "reason": "Reason",
-    "content_type": "Content Type",
-    "indexability": "Indexability",
-    "indexability_status": "Indexability Status",
-    "canonical": "Canonical Link Element 1",
-    "unique_inlinks": "Unique Inlinks",
-    "redirect_url": "Redirect URL",
-    "crawl_truncated": "Crawl Truncated",
-}
+
+def _screaming_frog_export_stem(export: str) -> str:
+    try:
+        _, stem = SCREAMING_FROG_EXPORTS[export]
+    except KeyError as error:
+        choices = ", ".join(sorted(SCREAMING_FROG_EXPORTS))
+        raise ValueError(
+            f"Unknown Screaming Frog export {export!r}; choose one of {choices}."
+        ) from error
+    return stem
 
 
-def crawl_csv_name(
-    today: date | None = None, months_back: int = 1
+def screaming_frog_csv_name(
+    export: str,
+    today: date | None = None,
+    months_back: int = 1,
 ) -> str:
+    """Return a Screaming Frog filename for use inside a month folder.
+
+    ``today`` and ``months_back`` remain accepted for compatibility with the
+    stream naming callback; the enclosing folder carries the month instead.
+    """
+    del today, months_back
+    return f"{_screaming_frog_export_stem(export)}.csv"
+
+
+def legacy_screaming_frog_csv_name(
+    export: str,
+    today: date | None = None,
+    months_back: int = 1,
+) -> str:
+    """Return the pre-folder filename for a legacy flat-file migration."""
     month = month_range(today, months_back=months_back)[0]
-    return f"{month:%Y-%m}.csv"
+    return f"{_screaming_frog_export_stem(export)}_{month:%Y-%m}.csv"
 
 
-def serialize_crawl_rows(rows: list[dict[str, Any]] | None) -> bytes:
-    return serialize_dict_rows(
-        rows, CRAWL_COLUMNS, names=_CRAWL_HEADER_NAMES
-    )
+def raw_csv_bytes(content: bytes) -> bytes:
+    """Pass through bytes that are already a complete CSV (Screaming Frog export)."""
+    return content

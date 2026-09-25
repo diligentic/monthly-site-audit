@@ -93,6 +93,20 @@ def _error_message(error: Exception) -> str:
         return str(error)
 
 
+def _normalize_relative_path(relative_path: str) -> str:
+    """Validate a path relative to the audit root and return it normalized."""
+    normalized_path = relative_path.strip("/")
+    if (
+        not normalized_path
+        or "\\" in normalized_path
+        or any(part in {"", ".", ".."} for part in normalized_path.split("/"))
+    ):
+        raise ValueError(
+            "relative_path must be a non-empty path below the audit root"
+        )
+    return normalized_path
+
+
 class GoogleDriveStorage:
     """Idempotent CSV storage under an ``audit_data`` folder on Google Drive.
 
@@ -120,11 +134,7 @@ class GoogleDriveStorage:
         ``Diligentic/GSC/queries_2026-09.csv``). Only files in the configured
         audit tree can be resolved by this method.
         """
-        normalized_path = relative_path.strip("/")
-        if not normalized_path or any(
-            part in {"", ".", ".."} for part in normalized_path.split("/")
-        ):
-            raise ValueError("relative_path must be a non-empty path below the audit root")
+        normalized_path = _normalize_relative_path(relative_path)
 
         file_info = self._resolve_file(normalized_path)
         if file_info is None:
@@ -143,23 +153,38 @@ class GoogleDriveStorage:
             )
         return normalized_path.rsplit("/", 1)[-1], content
 
-    def upload_csv(self, relative_path: str, content: bytes) -> None:
-        """Create or update a CSV at ``relative_path`` on Google Drive.
+    def upload_csv(
+        self,
+        relative_path: str,
+        content: bytes,
+        *,
+        overwrite: bool = False,
+    ) -> None:
+        """Create a CSV at ``relative_path`` without overwriting by default.
 
         ``relative_path`` is relative to the audit root, e.g.
-        ``Diligentic/GSC/queries_2026-09.csv``. Uploads are idempotent: if
-        the file already exists in the target folder it is updated in place;
-        otherwise it is created.
+        ``Diligentic/GSC/queries_2026-09.csv``. Existing content is preserved
+        unless ``overwrite=True`` is explicitly requested.
         """
         folder_path, _, filename = relative_path.rpartition("/")
         folder_id = self._ensure_folder_path(folder_path)
 
+        # Drive's simple multipart upload is limited to 5 MB. Crawl exports
+        # such as Images and Page Titles can exceed that limit in production,
+        # so use a resumable session for every CSV upload.
         media = MediaIoBaseUpload(
-            io.BytesIO(content), mimetype="text/csv", resumable=False
+            io.BytesIO(content), mimetype="text/csv", resumable=True
+        )
+        logger.info(
+            "Uploading Google Drive file %s (%d bytes, resumable)",
+            relative_path,
+            len(content),
         )
         try:
-            existing = self._file_in_folder(filename, folder_id)
+            existing = self._file_in_folder(filename, folder_id, refresh=True)
             if existing is not None:
+                if not overwrite:
+                    raise FileExistsError(relative_path)
                 self._service.files().update(
                     fileId=existing["id"],
                     media_body=media,
@@ -188,10 +213,61 @@ class GoogleDriveStorage:
                 f"Failed to upload {relative_path!r} to Google Drive: "
                 f"{_error_message(error)}"
             ) from error
+        except FileExistsError:
+            raise
         except OSError as error:
             raise GoogleDriveError(
                 f"Failed to upload {relative_path!r} to Google Drive: {error}"
             ) from error
+
+    def move_file(
+        self, source_relative_path: str, target_relative_path: str
+    ) -> None:
+        """Move and optionally rename a file without overwriting the target.
+
+        Both paths are relative to the audit root. The operation preserves the
+        Drive file id and content, creates the target folder when needed, and
+        fails if a target file already exists.
+        """
+        source_path = _normalize_relative_path(source_relative_path)
+        target_path = _normalize_relative_path(target_relative_path)
+        if source_path == target_path:
+            raise ValueError("source and target paths must be different")
+
+        source = self._resolve_file(source_path)
+        if source is None:
+            raise FileNotFoundError(source_path)
+
+        target_folder_path, _, target_filename = target_path.rpartition("/")
+        target_folder_id = self._ensure_folder_path(target_folder_path)
+        if (
+            self._file_in_folder(
+                target_filename, target_folder_id, refresh=True
+            )
+            is not None
+        ):
+            raise FileExistsError(target_path)
+
+        source_folder_path, _, _ = source_path.rpartition("/")
+        source_folder_id = self._ensure_folder_path(source_folder_path)
+        try:
+            self._service.files().update(
+                fileId=source["id"],
+                body={"name": target_filename},
+                addParents=target_folder_id,
+                removeParents=source_folder_id,
+                fields="id,name,parents",
+            ).execute()
+        except (GoogleAPICallError, HttpError) as error:
+            raise GoogleDriveError(
+                f"Failed to move {source_path!r} to {target_path!r} on Google "
+                f"Drive: {_error_message(error)}"
+            ) from error
+
+        source_filename = source_path.rsplit("/", 1)[-1]
+        self._file_cache[(source_folder_id, source_filename)] = None
+        self._file_cache[(target_folder_id, target_filename)] = source["id"]
+        logger.info("Moved Google Drive file %s to %s", source_path, target_path)
 
     # ------------------------------------------------------------------
     # Folder resolution
@@ -262,9 +338,15 @@ class GoogleDriveStorage:
         folder_id = self._ensure_folder_path(folder_path)
         return self._file_in_folder(filename, folder_id)
 
-    def _file_in_folder(self, name: str, folder_id: str) -> dict[str, Any] | None:
+    def _file_in_folder(
+        self,
+        name: str,
+        folder_id: str,
+        *,
+        refresh: bool = False,
+    ) -> dict[str, Any] | None:
         cache_key = (folder_id, name)
-        if cache_key in self._file_cache:
+        if not refresh and cache_key in self._file_cache:
             cached = self._file_cache[cache_key]
             return {"id": cached} if cached else None
         query = (

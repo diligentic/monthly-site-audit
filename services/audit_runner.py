@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 from functools import partial
 from typing import Any
 
+from constants.crawl import SCREAMING_FROG_EXPORTS
 from constants.ga4 import GA4_REPORTS, GA4Report
 from constants.search_console import COUNTRY_FILTER_EXPRESSION
 from constants.sites import (
@@ -23,13 +24,16 @@ from services.bing import (
 from services.bing import (
     validate_bing_credentials,
 )
-from services.crawl import clear_crawl_cache, fetch_crawl_data
 from services.drive import (
     GoogleDriveError,
     GoogleDriveStorage,
     validate_drive_credentials,
 )
 from services.ga4 import fetch_ga4_data, validate_ga4_credentials
+from services.screaming_frog import (
+    clear_screaming_frog_cache,
+    fetch_screaming_frog_export,
+)
 from services.search_console import (
     fetch_page_data,
     fetch_query_data,
@@ -43,10 +47,13 @@ from utils.bing_csv import (
     serialize_bing_page_rows,
     serialize_bing_query_rows,
 )
-from utils.crawl_csv import crawl_csv_name, serialize_crawl_rows
+from utils.crawl_csv import (
+    legacy_screaming_frog_csv_name,
+    raw_csv_bytes,
+    screaming_frog_csv_name,
+)
 from utils.dates import month_range
 from utils.ga4_csv import ga4_csv_name, serialize_ga4_rows
-from utils.image_csv import image_csv_name, serialize_image_rows
 from utils.pages_csv import pages_csv_name, serialize_page_rows
 from utils.queries_csv import queries_csv_name, serialize_query_rows
 from utils.sitemap_csv import serialize_sitemap_rows, sitemap_csv_name
@@ -66,6 +73,7 @@ class Stream:
     drive_path: Callable[..., str]
     serialize: Callable[..., bytes]
     response_field: str = "rows"
+    legacy_drive_path: Callable[..., str] | None = None
 
 
 def _drive_relative_path(
@@ -77,6 +85,21 @@ def _drive_relative_path(
 ) -> str:
     """Relative Drive path such as ``Diligentic/GSC/queries_2026-09.csv``."""
     return f"{site.name}/{provider.value}/{csv_name(today, months_back)}"
+
+
+def _month_drive_relative_path(
+    site: Site,
+    provider: Provider,
+    csv_name: Callable[..., str],
+    today: date,
+    months_back: int,
+) -> str:
+    """Build a Drive path with a ``YYYY-MM`` directory."""
+    month = month_range(today, months_back)[0]
+    return (
+        f"{site.name}/{provider.value}/{month:%Y-%m}/"
+        f"{csv_name(today, months_back)}"
+    )
 
 
 def _make_stream(
@@ -113,7 +136,39 @@ def ga4_stream(site: Site, report: GA4Report) -> Stream:
     )
 
 
-def streams_for(site: Site) -> tuple[Stream, ...]:
+def screaming_frog_streams(site: Site) -> tuple[Stream, ...]:
+    """Return all five tab exports plus the Issues Overview for one site."""
+    return tuple(
+        Stream(
+            label=(
+                f"{site.name} {Provider.CRAWL.value} Screaming Frog {report_name}"
+            ),
+            fetch=partial(
+                fetch_screaming_frog_export,
+                export=export,
+                site_url=site.bing_site_url,
+            ),
+            drive_path=partial(
+                _month_drive_relative_path,
+                site,
+                Provider.CRAWL,
+                partial(screaming_frog_csv_name, export),
+            ),
+            serialize=raw_csv_bytes,
+            legacy_drive_path=partial(
+                _drive_relative_path,
+                site,
+                Provider.CRAWL,
+                partial(legacy_screaming_frog_csv_name, export),
+            ),
+        )
+        for export, (report_name, _) in SCREAMING_FROG_EXPORTS.items()
+    )
+
+
+def streams_for(site: Site, *, crawl_only: bool = False) -> tuple[Stream, ...]:
+    if crawl_only:
+        return screaming_frog_streams(site)
     provider = Provider.GSC
     return (
         Stream(
@@ -182,23 +237,7 @@ def streams_for(site: Site) -> tuple[Stream, ...]:
             ),
             serialize=serialize_sitemap_rows,
         ),
-        Stream(
-            label=f"{site.name} {Provider.CRAWL.value} pages",
-            fetch=partial(fetch_crawl_data, site_url=site.bing_site_url),
-            drive_path=partial(
-                _drive_relative_path, site, Provider.CRAWL, crawl_csv_name
-            ),
-            serialize=serialize_crawl_rows,
-        ),
-        Stream(
-            label=f"{site.name} {Provider.IMAGES.value}",
-            fetch=partial(fetch_crawl_data, site_url=site.bing_site_url),
-            drive_path=partial(
-                _drive_relative_path, site, Provider.IMAGES, image_csv_name
-            ),
-            serialize=serialize_image_rows,
-            response_field="image_rows",
-        ),
+        *screaming_frog_streams(site),
         Stream(
             label=f"{site.name} Web Core Vitals",
             fetch=partial(fetch_web_core_vitals_data, site_url=site.bing_site_url),
@@ -235,25 +274,48 @@ def _build_storage() -> GoogleDriveStorage:
     return storage
 
 
+def _migrate_legacy_month_file(
+    stream: Stream,
+    today: date,
+    months_back: int,
+    *,
+    storage: GoogleDriveStorage,
+) -> bool:
+    """Move a pre-folder crawl file into its month directory when available."""
+    if stream.legacy_drive_path is None:
+        return False
+    legacy_path = stream.legacy_drive_path(today, months_back)
+    if not storage.file_exists(legacy_path):
+        return False
+    canonical_path = stream.drive_path(today, months_back)
+    logger.info(
+        "Migrating existing Google Drive file %s to %s without refetching",
+        legacy_path,
+        canonical_path,
+    )
+    storage.move_file(legacy_path, canonical_path)
+    return True
+
+
 def ensure_month_data(
     stream: Stream,
     today: date,
     months_back: int,
     *,
-    overwrite: bool,
     storage: GoogleDriveStorage,
 ) -> tuple[str, int]:
     """Collect one stream for one month and upload it to Google Drive.
 
     Returns ``(status, row_count)`` where ``status`` is ``"stored"`` for a
     freshly fetched month or ``"skipped"`` when the CSV already exists on
-    Drive and was kept. Failures raise ``RuntimeError`` and are handled by
-    the caller.
+    Drive and was kept. Legacy flat crawl files are moved into the canonical
+    month folder and treated as skipped. Failures raise ``RuntimeError`` and
+    are handled by the caller.
     """
     month_start, month_end = month_range(today, months_back)
     relative_path = stream.drive_path(today, months_back)
 
-    if not overwrite and storage.file_exists(relative_path):
+    if storage.file_exists(relative_path):
         logger.info(
             "Skipping %s (%s): already on Google Drive at %s",
             month_start.strftime("%Y-%m"),
@@ -262,9 +324,29 @@ def ensure_month_data(
         )
         return "skipped", 0
 
+    if _migrate_legacy_month_file(
+        stream, today, months_back, storage=storage
+    ):
+        logger.info(
+            "Skipping %s (%s): migrated an existing Drive file to %s",
+            month_start.strftime("%Y-%m"),
+            stream.label,
+            relative_path,
+        )
+        return "skipped", 0
+
     response = stream.fetch(start_date=month_start, end_date=month_end)
     rows = response.get(stream.response_field) or []
-    storage.upload_csv(relative_path, stream.serialize(rows))
+    try:
+        storage.upload_csv(relative_path, stream.serialize(rows))
+    finally:
+        # Streams that own external resources (e.g. the Screaming Frog
+        # temporary crawl folder) expose a cleanup hook on their fetch result
+        # so the temporary files are removed after the upload - and never
+        # leak when the upload fails.
+        cleanup = response.get("cleanup")
+        if cleanup is not None:
+            cleanup()
     logger.info(
         "Stored %d %s rows for %s on Google Drive as %s",
         len(rows),
@@ -304,24 +386,25 @@ def run_site_collect(
     site: Site,
     today: date,
     storage: GoogleDriveStorage,
+    *,
+    crawl_only: bool = False,
 ) -> SiteResult:
     results: list[StreamResult] = []
     failures = 0
+    site_streams = streams_for(site, crawl_only=crawl_only)
     for months_back in range(1, site.history_months + 1):
-        overwrite = months_back <= site.always_fetch_months
         month_label = month_range(today, months_back)[0].strftime("%Y-%m")
-        for stream in streams_for(site):
+        for stream in site_streams:
             try:
                 status, row_count = ensure_month_data(
                     stream,
                     today,
                     months_back,
-                    overwrite=overwrite,
                     storage=storage,
                 )
-            except (OSError, RuntimeError) as error:
+            except Exception as error:
                 failures += 1
-                logger.error(
+                logger.exception(
                     "Failed to collect %s for %s: %s",
                     stream.label,
                     month_label,
@@ -341,19 +424,25 @@ def run_audit(
     *,
     site_names: list[str] | None = None,
     today: date | None = None,
+    crawl_only: bool = False,
 ) -> AuditRunResult:
     """Run the audit for every scheduled site (or a subset) and report results.
 
     All collected CSVs are uploaded to Google Drive under ``audit_data``; no
-    data is written to local disk. The crawl stream caches one snapshot per
-    site *per process*; the cache is cleared here so a long-lived API process
-    still re-crawls on every run.
+    data is written to local disk. Existing Drive files are never fetched or
+    overwritten. With ``crawl_only=True``, only the five Screaming Frog tab
+    exports and Issues Overview report are collected; non-crawl API credentials
+    are not required.
+
+    The crawl cache is cleared for every run so a long-lived API process does
+    not reuse a snapshot from an earlier run.
     """
-    clear_crawl_cache()
-    validate_credentials()
-    validate_bing_credentials()
-    validate_ga4_credentials(SITES)
+    clear_screaming_frog_cache()
     validate_drive_credentials()
+    if not crawl_only:
+        validate_credentials()
+        validate_bing_credentials()
+        validate_ga4_credentials(SITES)
     storage = _build_storage()
 
     anchor = today or datetime.now(UTC).date()
@@ -370,7 +459,9 @@ def run_audit(
                 ", ".join(str(month) for month in sorted(QUARTERLY_MONTHS)),
             )
             continue
-        site_results.append(run_site_collect(site, anchor, storage))
+        site_results.append(
+            run_site_collect(site, anchor, storage, crawl_only=crawl_only)
+        )
 
     finished_at = datetime.now(UTC)
     return AuditRunResult(

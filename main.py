@@ -30,6 +30,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         metavar="YYYY-MM-DD",
         help="Anchor date; defaults to today, e.g. 2026-07-15 to simulate a July run.",
     )
+    parser.add_argument(
+        "--crawl-only",
+        action="store_true",
+        help=(
+            "Run only the Screaming Frog Internal, H1, Meta Description, "
+            "Page Titles, Images, and Issues exports."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -40,6 +48,7 @@ def main(argv: list[str] | None = None) -> None:
         result = run_audit(
             site_names=[args.site] if args.site else None,
             today=args.date,
+            crawl_only=args.crawl_only,
         )
     except ConfigurationError as error:
         logger.error("%s", error)
