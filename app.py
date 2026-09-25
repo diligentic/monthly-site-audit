@@ -50,6 +50,13 @@ class RunRequest(BaseModel):
         description="Anchor date (YYYY-MM-DD); defaults to today. Useful for testing.",
         examples=["2026-09-23"],
     )
+    crawl_only: bool = Field(
+        default=False,
+        description=(
+            "Run only the six Screaming Frog crawl exports, without the other "
+            "audit providers."
+        ),
+    )
 
 
 class RunResponse(BaseModel):
@@ -88,7 +95,13 @@ class RunManager:
         self._active: str | None = None
         self._lock = threading.Lock()
 
-    def start(self, *, site: str | None, requested_date: date_type | None) -> str:
+    def start(
+        self,
+        *,
+        site: str | None,
+        requested_date: date_type | None,
+        crawl_only: bool = False,
+    ) -> str:
         with self._lock:
             if self._active is not None:
                 raise RunInProgressError(self._active)
@@ -96,7 +109,7 @@ class RunManager:
             self._active = run_id
         thread = threading.Thread(
             target=self._execute,
-            args=(run_id, site, requested_date),
+            args=(run_id, site, requested_date, crawl_only),
             name=f"audit-{run_id}",
             daemon=True,
         )
@@ -108,11 +121,28 @@ class RunManager:
         run_id: str,
         site: str | None,
         requested_date: date_type | None,
+        crawl_only: bool,
     ) -> None:
-        logger.info("Audit run %s started", run_id)
+        logger.info(
+            "Audit run %s started (crawl_only=%s, commit=%s)",
+            run_id,
+            crawl_only,
+            os.getenv("RENDER_GIT_COMMIT", "unknown"),
+        )
         try:
-            run_audit(site_names=[site] if site else None, today=requested_date)
-            logger.info("Audit run %s finished", run_id)
+            result = run_audit(
+                site_names=[site] if site else None,
+                today=requested_date,
+                crawl_only=crawl_only,
+            )
+            if result.failures:
+                logger.error(
+                    "Audit run %s finished with %d failure(s)",
+                    run_id,
+                    result.failures,
+                )
+            else:
+                logger.info("Audit run %s finished", run_id)
         except Exception:
             logger.exception("Audit run %s failed", run_id)
         finally:
@@ -147,7 +177,11 @@ def create_run(payload: RunRequest | None = None) -> RunResponse:
                 detail=f"Unknown site {payload.site!r}. Choices: {', '.join(sorted(choices))}.",
             )
     try:
-        run_id = manager.start(site=payload.site, requested_date=payload.date)
+        run_id = manager.start(
+            site=payload.site,
+            requested_date=payload.date,
+            crawl_only=payload.crawl_only,
+        )
     except RunInProgressError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

@@ -402,9 +402,9 @@ def run_site_collect(
                     months_back,
                     storage=storage,
                 )
-            except (OSError, RuntimeError) as error:
+            except Exception as error:
                 failures += 1
-                logger.error(
+                logger.exception(
                     "Failed to collect %s for %s: %s",
                     stream.label,
                     month_label,

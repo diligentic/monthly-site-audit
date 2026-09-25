@@ -77,7 +77,8 @@ same Google API key as Search Console.
 
 Before collecting any stream, the runner checks its exact target path on Drive.
 An existing monthly CSV is left untouched and its source is not called; only
-missing CSVs are fetched and uploaded. Crawl files from the earlier flat
+missing CSVs are fetched and uploaded. Drive uploads use resumable sessions, so
+large crawl exports are supported. Crawl files from the earlier flat
 `Crawls/<name>_YYYY-MM.csv` layout are moved (without downloading or refetching
 their contents) into `Crawls/YYYY-MM/<name>.csv` when the canonical file is
 missing. A migration never overwrites a canonical file. Missing folders
@@ -172,9 +173,12 @@ curl --get http://localhost:8000/api/v1/drive/files \
   -o h1.csv
 ```
 
-The optional JSON body accepts `site` (a site name) and `date` (an anchor date,
-useful for testing). A run with an empty body audits every scheduled site; the
-quarterly site is skipped automatically outside its quarter months.
+The optional JSON body accepts `site` (a site name), `date` (an anchor date,
+useful for testing), and `crawl_only` (set to `true` to run only the six
+Screaming Frog crawl exports). A run with an empty body audits every scheduled
+site; the quarterly site is skipped automatically outside its quarter months.
+The endpoint returns `202` as soon as the background run starts; wait for the
+`Audit run <id> finished` log entry before checking Drive.
 
 ### Deployment (Render)
 

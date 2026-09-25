@@ -169,8 +169,16 @@ class GoogleDriveStorage:
         folder_path, _, filename = relative_path.rpartition("/")
         folder_id = self._ensure_folder_path(folder_path)
 
+        # Drive's simple multipart upload is limited to 5 MB. Crawl exports
+        # such as Images and Page Titles can exceed that limit in production,
+        # so use a resumable session for every CSV upload.
         media = MediaIoBaseUpload(
-            io.BytesIO(content), mimetype="text/csv", resumable=False
+            io.BytesIO(content), mimetype="text/csv", resumable=True
+        )
+        logger.info(
+            "Uploading Google Drive file %s (%d bytes, resumable)",
+            relative_path,
+            len(content),
         )
         try:
             existing = self._file_in_folder(filename, folder_id, refresh=True)
