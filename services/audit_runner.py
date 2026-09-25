@@ -30,6 +30,11 @@ from services.drive import (
     validate_drive_credentials,
 )
 from services.ga4 import fetch_ga4_data, validate_ga4_credentials
+from services.screaming_frog import (
+    clear_screaming_frog_cache,
+    fetch_internal_crawl,
+    fetch_issues_crawl,
+)
 from services.search_console import (
     fetch_page_data,
     fetch_query_data,
@@ -43,7 +48,11 @@ from utils.bing_csv import (
     serialize_bing_page_rows,
     serialize_bing_query_rows,
 )
-from utils.crawl_csv import crawl_csv_name, serialize_crawl_rows
+from utils.crawl_csv import (
+    internal_crawl_csv_name,
+    issues_crawl_csv_name,
+    raw_csv_bytes,
+)
 from utils.dates import month_range
 from utils.ga4_csv import ga4_csv_name, serialize_ga4_rows
 from utils.image_csv import image_csv_name, serialize_image_rows
@@ -183,12 +192,20 @@ def streams_for(site: Site) -> tuple[Stream, ...]:
             serialize=serialize_sitemap_rows,
         ),
         Stream(
-            label=f"{site.name} {Provider.CRAWL.value} pages",
-            fetch=partial(fetch_crawl_data, site_url=site.bing_site_url),
+            label=f"{site.name} {Provider.CRAWL.value} Screaming Frog Internal",
+            fetch=partial(fetch_internal_crawl, site_url=site.bing_site_url),
             drive_path=partial(
-                _drive_relative_path, site, Provider.CRAWL, crawl_csv_name
+                _drive_relative_path, site, Provider.CRAWL, internal_crawl_csv_name
             ),
-            serialize=serialize_crawl_rows,
+            serialize=raw_csv_bytes,
+        ),
+        Stream(
+            label=f"{site.name} {Provider.CRAWL.value} Screaming Frog Issues",
+            fetch=partial(fetch_issues_crawl, site_url=site.bing_site_url),
+            drive_path=partial(
+                _drive_relative_path, site, Provider.CRAWL, issues_crawl_csv_name
+            ),
+            serialize=raw_csv_bytes,
         ),
         Stream(
             label=f"{site.name} {Provider.IMAGES.value}",
@@ -264,7 +281,16 @@ def ensure_month_data(
 
     response = stream.fetch(start_date=month_start, end_date=month_end)
     rows = response.get(stream.response_field) or []
-    storage.upload_csv(relative_path, stream.serialize(rows))
+    try:
+        storage.upload_csv(relative_path, stream.serialize(rows))
+    finally:
+        # Streams that own external resources (e.g. the Screaming Frog
+        # temporary crawl folder) expose a cleanup hook on their fetch result
+        # so the temporary files are removed after the upload - and never
+        # leak when the upload fails.
+        cleanup = response.get("cleanup")
+        if cleanup is not None:
+            cleanup()
     logger.info(
         "Stored %d %s rows for %s on Google Drive as %s",
         len(rows),
@@ -350,6 +376,7 @@ def run_audit(
     still re-crawls on every run.
     """
     clear_crawl_cache()
+    clear_screaming_frog_cache()
     validate_credentials()
     validate_bing_credentials()
     validate_ga4_credentials(SITES)

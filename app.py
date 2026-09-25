@@ -31,7 +31,8 @@ app = FastAPI(
     description=(
         "Triggers the monthly/quarterly site audit. Collected CSVs are "
         "uploaded to Google Drive under the 'audit_data' folder; nothing is "
-        "stored on local disk. Data is only collected when a run is triggered."
+        "kept on a persistent disk. Data is only "
+        "collected when a run is triggered."
     ),
 )
 

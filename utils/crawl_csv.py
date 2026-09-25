@@ -28,6 +28,34 @@ def crawl_csv_name(
     return f"{month:%Y-%m}.csv"
 
 
+def internal_crawl_csv_name(
+    today: date | None = None, months_back: int = 1
+) -> str:
+    """Google Drive name for the Screaming Frog crawl, e.g. ``internal_2026-09.csv``.
+
+    The name is independent of Screaming Frog's own export filename
+    (``internal_all.csv``).
+    """
+    month = month_range(today, months_back=months_back)[0]
+    return f"internal_{month:%Y-%m}.csv"
+
+
+def issues_crawl_csv_name(
+    today: date | None = None, months_back: int = 1
+) -> str:
+    """Google Drive name for the Screaming Frog issues export, e.g. ``issues_2026-09.csv``.
+
+    Independent of Screaming Frog's own export filename (``issues_all.csv``).
+    """
+    month = month_range(today, months_back=months_back)[0]
+    return f"issues_{month:%Y-%m}.csv"
+
+
+def raw_csv_bytes(content: bytes) -> bytes:
+    """Pass through bytes that are already a complete CSV (Screaming Frog export)."""
+    return content
+
+
 def serialize_crawl_rows(rows: list[dict[str, Any]] | None) -> bytes:
     return serialize_dict_rows(
         rows, CRAWL_COLUMNS, names=_CRAWL_HEADER_NAMES
