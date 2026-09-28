@@ -53,7 +53,8 @@ class RunRequest(BaseModel):
     crawl_only: bool = Field(
         default=False,
         description=(
-            "Run only the six Screaming Frog crawl exports, without the other "
+            "Run only the five internal crawl reports (internal, h1, "
+            "meta_description, page_titles, and issues), without the other "
             "audit providers."
         ),
     )
@@ -62,6 +63,22 @@ class RunRequest(BaseModel):
 class RunResponse(BaseModel):
     run_id: str
     status: str
+
+
+class DriveItem(BaseModel):
+    id: str
+    name: str
+    path: str
+    type: str
+    mime_type: str | None = None
+    size: str | None = None
+    modified_time: str | None = None
+    created_time: str | None = None
+
+
+class DriveContentsResponse(BaseModel):
+    path: str
+    items: list[DriveItem]
 
 
 def _require_api_key(
@@ -76,6 +93,40 @@ def _require_api_key(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API key.",
         )
+
+
+def _validate_drive_scope(site: str, provider: str) -> None:
+    site_names = {configured_site.name for configured_site in SITES}
+    if site not in site_names:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Unknown site {site!r}. Choices: {', '.join(sorted(site_names))}.",
+        )
+
+    provider_names = {configured_provider.value for configured_provider in Provider}
+    if provider not in provider_names:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Unknown provider {provider!r}. Choices: "
+                f"{', '.join(sorted(provider_names))}."
+            ),
+        )
+
+
+def _normalize_drive_folder_query(folder: str) -> str:
+    """Validate a provider-relative folder before constructing a Drive path."""
+    normalized = folder.strip("/")
+    if not normalized:
+        return ""
+    if "\\" in normalized or any(
+        part in {"", ".", ".."} for part in normalized.split("/")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="folder must be a safe path relative to the provider folder.",
+        )
+    return normalized
 
 
 class RunInProgressError(RuntimeError):
@@ -191,6 +242,48 @@ def create_run(payload: RunRequest | None = None) -> RunResponse:
 
 
 @app.get(
+    "/api/v1/drive/contents",
+    response_model=DriveContentsResponse,
+    tags=["drive"],
+    dependencies=[Depends(_require_api_key)],
+)
+def list_drive_contents(
+    site: str = Query(..., description="Site folder, for example Diligentic."),
+    provider: str = Query(..., description="Data folder, for example Crawls."),
+    folder: str = Query(
+        default="",
+        description=(
+            "Optional provider-relative folder path, for example 2026-08. "
+            "All descendants are returned recursively."
+        ),
+    ),
+) -> DriveContentsResponse:
+    """List uploaded Drive folders/files without downloading their contents."""
+    _validate_drive_scope(site, provider)
+    normalized_folder = _normalize_drive_folder_query(folder)
+    relative_folder = f"{site}/{provider}"
+    if normalized_folder:
+        relative_folder = f"{relative_folder}/{normalized_folder}"
+    try:
+        items = GoogleDriveStorage().list_tree(relative_folder)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(error),
+        ) from error
+    except (GoogleDriveError, ConfigurationError) as error:
+        logger.exception("Google Drive listing failed for %s", relative_folder)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to list the requested Drive contents.",
+        ) from error
+    return DriveContentsResponse(
+        path=relative_folder,
+        items=[DriveItem(**item) for item in items],
+    )
+
+
+@app.get(
     "/api/v1/drive/files",
     tags=["drive"],
     dependencies=[Depends(_require_api_key)],
@@ -209,19 +302,7 @@ def download_drive_file(
     ),
 ) -> Response:
     """Download a CSV from the selected site and provider on Google Drive."""
-    site_names = {configured_site.name for configured_site in SITES}
-    if site not in site_names:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Unknown site {site!r}. Choices: {', '.join(sorted(site_names))}.",
-        )
-
-    provider_names = {configured_provider.value for configured_provider in Provider}
-    if provider not in provider_names:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Unknown provider {provider!r}. Choices: {', '.join(sorted(provider_names))}.",
-        )
+    _validate_drive_scope(site, provider)
     path_parts = file_name.split("/")
     if (
         file_name.startswith("/")

@@ -34,8 +34,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--crawl-only",
         action="store_true",
         help=(
-            "Run only the Screaming Frog Internal, H1, Meta Description, "
-            "Page Titles, Images, and Issues exports."
+            "Run only the internal crawl reports "
+            "(Internal, H1, Meta Description, Page Titles, and Issues)."
         ),
     )
     return parser.parse_args(argv)

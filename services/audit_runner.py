@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 from functools import partial
 from typing import Any
 
-from constants.crawl import SCREAMING_FROG_EXPORTS
+from constants.crawl import CRAWL_EXPORTS
 from constants.ga4 import GA4_REPORTS, GA4Report
 from constants.search_console import COUNTRY_FILTER_EXPRESSION
 from constants.sites import (
@@ -24,16 +24,13 @@ from services.bing import (
 from services.bing import (
     validate_bing_credentials,
 )
+from services.crawl import clear_crawl_cache, fetch_crawl_export
 from services.drive import (
     GoogleDriveError,
     GoogleDriveStorage,
     validate_drive_credentials,
 )
 from services.ga4 import fetch_ga4_data, validate_ga4_credentials
-from services.screaming_frog import (
-    clear_screaming_frog_cache,
-    fetch_screaming_frog_export,
-)
 from services.search_console import (
     fetch_page_data,
     fetch_query_data,
@@ -48,9 +45,9 @@ from utils.bing_csv import (
     serialize_bing_query_rows,
 )
 from utils.crawl_csv import (
-    legacy_screaming_frog_csv_name,
-    raw_csv_bytes,
-    screaming_frog_csv_name,
+    crawl_csv_name,
+    legacy_crawl_csv_name,
+    serialize_crawl_rows,
 )
 from utils.dates import month_range
 from utils.ga4_csv import ga4_csv_name, serialize_ga4_rows
@@ -136,15 +133,13 @@ def ga4_stream(site: Site, report: GA4Report) -> Stream:
     )
 
 
-def screaming_frog_streams(site: Site) -> tuple[Stream, ...]:
-    """Return all five tab exports plus the Issues Overview for one site."""
+def crawl_streams(site: Site) -> tuple[Stream, ...]:
+    """Return the five crawl reports for one site."""
     return tuple(
         Stream(
-            label=(
-                f"{site.name} {Provider.CRAWL.value} Screaming Frog {report_name}"
-            ),
+            label=f"{site.name} {Provider.CRAWL.value} {report_name}",
             fetch=partial(
-                fetch_screaming_frog_export,
+                fetch_crawl_export,
                 export=export,
                 site_url=site.bing_site_url,
             ),
@@ -152,23 +147,23 @@ def screaming_frog_streams(site: Site) -> tuple[Stream, ...]:
                 _month_drive_relative_path,
                 site,
                 Provider.CRAWL,
-                partial(screaming_frog_csv_name, export),
+                partial(crawl_csv_name, export),
             ),
-            serialize=raw_csv_bytes,
+            serialize=partial(serialize_crawl_rows, export=export),
             legacy_drive_path=partial(
                 _drive_relative_path,
                 site,
                 Provider.CRAWL,
-                partial(legacy_screaming_frog_csv_name, export),
+                partial(legacy_crawl_csv_name, export),
             ),
         )
-        for export, (report_name, _) in SCREAMING_FROG_EXPORTS.items()
+        for export, (report_name, _) in CRAWL_EXPORTS.items()
     )
 
 
 def streams_for(site: Site, *, crawl_only: bool = False) -> tuple[Stream, ...]:
     if crawl_only:
-        return screaming_frog_streams(site)
+        return crawl_streams(site)
     provider = Provider.GSC
     return (
         Stream(
@@ -237,7 +232,7 @@ def streams_for(site: Site, *, crawl_only: bool = False) -> tuple[Stream, ...]:
             ),
             serialize=serialize_sitemap_rows,
         ),
-        *screaming_frog_streams(site),
+        *crawl_streams(site),
         Stream(
             label=f"{site.name} Web Core Vitals",
             fetch=partial(fetch_web_core_vitals_data, site_url=site.bing_site_url),
@@ -340,10 +335,10 @@ def ensure_month_data(
     try:
         storage.upload_csv(relative_path, stream.serialize(rows))
     finally:
-        # Streams that own external resources (e.g. the Screaming Frog
-        # temporary crawl folder) expose a cleanup hook on their fetch result
-        # so the temporary files are removed after the upload - and never
-        # leak when the upload fails.
+        # Streams that own temporary on-disk state (e.g. the crawl working
+        # directory) expose a cleanup hook on their fetch result so the
+        # temporary files are removed after the upload - and never leak when
+        # the upload fails.
         cleanup = response.get("cleanup")
         if cleanup is not None:
             cleanup()
@@ -430,14 +425,13 @@ def run_audit(
 
     All collected CSVs are uploaded to Google Drive under ``audit_data``; no
     data is written to local disk. Existing Drive files are never fetched or
-    overwritten. With ``crawl_only=True``, only the five Screaming Frog tab
-    exports and Issues Overview report are collected; non-crawl API credentials
-    are not required.
+    overwritten. With ``crawl_only=True``, only the five crawl reports are
+    collected; non-crawl API credentials are not required.
 
     The crawl cache is cleared for every run so a long-lived API process does
     not reuse a snapshot from an earlier run.
     """
-    clear_screaming_frog_cache()
+    clear_crawl_cache()
     validate_drive_credentials()
     if not crawl_only:
         validate_credentials()

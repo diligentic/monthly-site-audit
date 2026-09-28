@@ -2,11 +2,12 @@
 
 Collects performance data from Google Search Console and Bing Webmaster
 (queries, pages), Google Analytics 4 (traffic by source/medium), sitemap and
-Core Web Vitals snapshots, plus five Screaming Frog SEO Spider tab exports and
-its Issues Overview report. Every stream is serialised to a CSV **in memory**
-and uploaded to **Google Drive** under the `audit_data/` folder. Screaming Frog
-artifacts land in a temporary directory that is deleted right after upload — no
-crawl CSV is ever written to a persistent disk or a project folder.
+Core Web Vitals snapshots, plus five internal crawl reports built with
+[advertools](https://github.com/nieber/advertools) (Scrapy). Every stream is
+serialised to a CSV **in memory** and uploaded to **Google Drive** under the
+`audit_data/` folder. Crawl artifacts live in a temporary directory that is
+deleted right after upload — no crawl CSV is ever written to a persistent disk
+or a project folder.
 
 ```
 audit_data/
@@ -31,7 +32,6 @@ audit_data/
 │   │       ├── h1.csv
 │   │       ├── meta_description.csv
 │   │       ├── page_titles.csv
-│   │       ├── images.csv
 │   │       └── issues.csv
 │   └── WebCoreVitals/
 │       └── web_core_vitals_2026-08.csv
@@ -59,11 +59,11 @@ GOOGLE_OAUTH_CLIENT_SECRET=your_client_secret
 GOOGLE_REFRESH_TOKEN=your_refresh_token
 # Optional: store data inside this folder id instead of the top of My Drive
 GOOGLE_DRIVE_ROOT_FOLDER_ID=
-
-# Screaming Frog CLI (optional on Linux, where `screamingfrogseospider` is on PATH)
-# SCREAMING_FROG_PATH=/Applications/Screaming Frog SEO Spider.app/Contents/MacOS/ScreamingFrogSEOSpiderLauncher
-# SCREAMING_FROG_TIMEOUT_SECONDS=3600
 ```
+
+The crawl has no credentials. Every knob has a default that fits the Render
+Free Tier, so nothing has to be set for it to run; see
+[Site crawl](#site-crawl) for the full list.
 
 GA4 reuses the Search Console API key and the Google OAuth credentials above.
 The application refreshes access tokens automatically; no manually generated
@@ -94,46 +94,125 @@ uv run python main.py
 The CLI and the HTTP API below share the exact same orchestration
 (`services/audit_runner.py`), so results are identical either way.
 
-## Screaming Frog crawl
+## Site crawl
 
-The crawl is delegated to the **Screaming Frog SEO Spider** running headless as
-a subprocess (`services/screaming_frog.py`). It exports these required tabs:
-`Internal`, `H1`, `Meta Description`, `Page Titles`, and `Images`. It also runs
-the `Issues:All` bulk export and stores its single Issues Overview summary.
+The crawl is delegated to **advertools** (`advertools.crawl()`, a Scrapy spider
+in `services/crawl.py`). It is a pure-Python dependency: no Java runtime, no
+external crawler binary, and no licence. Only the configured domain is crawled;
+`www` and the apex host are both treated as internal, and external links are
+counted but never followed.
+
 Flow:
 
-1. Python checks the six target CSVs for the month on Google Drive. If all six
+1. Python checks the five target CSVs for the month on Google Drive. If all five
    exist, that month's crawl is skipped entirely. Existing flat files are
    migrated into the month folder first, without refetching them.
-2. For a month with missing output, Python creates a private temporary folder
-   and launches Screaming Frog once with `--export-tabs
-   "Internal:All,H1:All,Meta Description:All,Page Titles:All,Images:All"` and
-   `--bulk-export "Issues:All"`.
-3. The five tab CSVs and `issues_reports/issues_overview_report.csv` are
-   located programmatically and read as raw bytes. Missing outputs are
-   uploaded under `Crawls/YYYY-MM/` as `internal.csv`, `h1.csv`,
-   `meta_description.csv`, `page_titles.csv`, `images.csv`, and `issues.csv`.
-   Outputs already present on Drive are not uploaded again.
+2. For a month with missing output, Python creates a private temporary folder and
+   runs one `advertools.crawl()` over the site, capped by the URL, depth, and
+   wall-clock limits below.
+3. The jsonlines output is read line by line and reduced to the five reports in
+   `utils/crawl_report.py`, then serialised in memory and uploaded to
+   `Crawls/YYYY-MM/` as `internal.csv`, `h1.csv`, `meta_description.csv`,
+   `page_titles.csv`, and `issues.csv`. Outputs already present on Drive are not
+   uploaded again.
 4. The temporary folder is removed after the uploads and on every crawl or
    upload failure, so crawl artifacts never persist locally.
 
-All six streams share a per-site in-memory cache. If outputs are missing for
-more than one historical month, Screaming Frog still runs only once for that
-site during the audit run and the resulting bytes are reused for each missing
-month. It is launched again only for a later audit run that still has missing
-output.
+All five reports share a per-site in-memory cache. If outputs are missing for
+more than one historical month, the site is still crawled only once during the
+audit run and the resulting rows are reused for each missing month. It is crawled again only for a later audit run that still has missing output.
 
-The executable comes from `SCREAMING_FROG_PATH` when set (for example, the
-macOS app launcher) and otherwise from `screamingfrogseospider` on `PATH` (the
-Linux CLI), so the same code works locally and on Render. To run only the six
-required crawl outputs without calling the other audit sources:
+A crawl that produces no usable response fails the run instead of uploading
+empty reports: advertools does not report a failed crawl, so a site that cannot
+be reached would otherwise yield five all-error CSVs. A *partially* failed
+crawl is normal and still produces reports, with the errored URLs listed in
+`issues.csv`.
+
+To run only the five crawl reports without calling the other audit sources:
 
 ```bash
-export SCREAMING_FROG_PATH="/Applications/Screaming Frog SEO Spider.app/Contents/MacOS/ScreamingFrogSEOSpiderLauncher"
 uv run python main.py --crawl-only --site Diligentic --date 2026-09-25
 ```
 
 Omit `--date` to use today. Omit `--site` to process all sites that are due.
+This uploads to Google Drive, so verify a run with the read-only Drive listing
+in [Checking a run on Drive](#checking-a-run-on-drive).
+
+### Report columns
+
+| File                   | Columns                                                                                                                                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `internal.csv`         | `URL,Status Code,Indexability,Indexability Status,Indexability Reason,Canonical URL,Inlinks,Unique Inlinks,Outlinks,Unique Outlinks,External Outlinks,Word Count,Content Type,Crawl Depth`            |
+| `h1.csv`               | `URL,H1,H1 count,H1 length` (one row per H1; a page without an H1 gets one empty row)                                                                                                                 |
+| `meta_description.csv` | `URL,Meta Description,Meta Description length,Missing Meta Description`                                                                                                                              |
+| `page_titles.csv`      | `URL,Page Title,Page Title length,Missing Page Title`                                                                                                                                                 |
+| `issues.csv`           | `URL,Issue,Category,Severity,Details` — one row per URL **and** detected issue, never a summary                                                                                                    |
+
+`issues.csv` reports: missing, duplicate, too short, and too long page titles;
+the same four for meta descriptions; missing H1; multiple H1s; duplicate H1;
+missing canonical; a canonical pointing at a non-200 URL; broken internal
+links; internal links to a redirect; internal links that were never crawled
+(page/depth/time budget); and every internal URL that is not a 200. Content
+elements are only checked on 2xx HTML documents, so a PDF or a 404 page is
+reported through its status code instead of as "missing title".
+
+The two title/description CSVs only flag a missing element on a page the
+content check applies to. A PDF, a 404, or a redirect keeps an empty cell and is
+**not** flagged, so the CSVs and `issues.csv` always agree.
+
+### Crawl environment variables
+
+| Variable                             | Default                       | Purpose                                                     |
+| ------------------------------------ | ----------------------------- | ----------------------------------------------------------- |
+| `CRAWL_MAX_URLS`                     | `2000`                        | Hard page-count cap (`CLOSESPIDER_PAGECOUNT`).              |
+| `CRAWL_MAX_DEPTH`                    | `10`                          | Maximum link depth, minimum `1` (the start URL is depth 0). |
+| `CRAWL_TIMEOUT_SECONDS`              | `1800`                        | Wall-clock cap for one crawl.                               |
+| `CRAWL_REQUEST_TIMEOUT_SECONDS`      | `20`                          | Per-request timeout.                                        |
+| `CRAWL_CONCURRENT_REQUESTS`          | `4`                           | Parallel downloads (also capped per domain).                |
+| `CRAWL_DOWNLOAD_DELAY`               | `0.25`                        | Delay between requests to the same domain, in seconds.      |
+| `CRAWL_RETRY_TIMES`                  | `2`                           | Retries per request.                                        |
+| `CRAWL_USER_AGENT`                   | `DiligenticSiteAudit/1.0 ...` | Crawler user agent.                                         |
+| `CRAWL_ROBOTS_TXT`                   | `1`                           | Obey `robots.txt`; set to `0` only for testing.             |
+| `CRAWL_RESPONSE_SIZE_LIMIT_MB`       | `5.0`                         | Responses larger than this are skipped.                     |
+| `CRAWL_EXCLUDE_URL_PARAMS`           | `utm_*,gclid,fbclid,mc_*`     | Comma-separated query parameters that do not identify a page. |
+| `CRAWL_LOG_LEVEL`                    | `INFO`                        | Scrapy log level.                                           |
+| `CRAWL_TITLE_MIN_LENGTH`             | `15`                          | Below this a title is "too short".                          |
+| `CRAWL_TITLE_MAX_LENGTH`             | `60`                          | Above this a title is "too long".                           |
+| `CRAWL_META_DESCRIPTION_MIN_LENGTH`  | `70`                          | Below this a description is "too short".                    |
+| `CRAWL_META_DESCRIPTION_MAX_LENGTH`  | `160`                         | Above this a description is "too long".                     |
+
+The title and description boundaries match the historical crawl CSVs already on
+Drive, so new reports stay comparable with them.
+
+### Known limitations
+
+- Scrapy follows redirects and yields one record per final URL. The hop is
+  restored from the redirect chain (with its real status and destination), but
+  only when the destination had not already been requested — a URL that is both
+  linked directly and redirected to is reported once, under its final URL.
+- The crawler is a best-effort audit crawl, not a validator: JavaScript-rendered
+  content is not executed, so titles, H1s, and meta descriptions are read from
+  the served HTML.
+- Pages blocked by `robots.txt`, larger than the response limit, or beyond the
+  URL/depth/time budget appear in `issues.csv` as "Internal link not crawled"
+  rather than being fetched.
+
+### Checking a run on Drive
+
+Both the CLI and the API write the same files, so a run can be verified
+straight from the production Drive client instead of the browser:
+
+```bash
+uv run python -c "
+from dotenv import load_dotenv; load_dotenv()
+from services.drive import GoogleDriveStorage
+for item in GoogleDriveStorage().list_tree('Diligentic/Crawls'):
+    print(item['type'], item['path'], item.get('size', ''))
+"
+```
+
+This is read-only: it creates nothing and never downloads a file body. The five
+CSVs of a month appear as `Diligentic/Crawls/YYYY-MM/<report>.csv`.
 
 ## HTTP API
 
@@ -141,8 +220,8 @@ The collection also runs on demand through a small FastAPI service (`app.py`).
 Nothing is fetched at startup or import time — data is only collected when a run
 is triggered. The GitHub Actions workflow posts to this API to start a run,
 which keeps data collection off the CI runner and on the server. Results are
-delivered straight to Google Drive and can be downloaded through the protected
-Drive file endpoint.
+delivered straight to Google Drive and can be listed or downloaded through the
+protected Drive endpoints.
 
 ### Endpoints
 
@@ -150,6 +229,7 @@ Drive file endpoint.
 | ------ | --------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `GET`  | `/healthz`            | Liveness probe (no auth).                                                                                    |
 | `POST` | `/api/v1/audit/runs`  | Start an audit in the background. Returns `202` with the `run_id`, or `409` if a run is already in progress. |
+| `GET`  | `/api/v1/drive/contents` | List uploaded folders and files below a site/provider, recursively.                                      |
 | `GET`  | `/api/v1/drive/files` | Download a stored CSV by site, provider, and provider-relative path.                                       |
 
 When `AUDIT_API_KEY` is set in the environment, requests must send it as the
@@ -161,6 +241,20 @@ curl -X POST http://localhost:8000/api/v1/audit/runs \
   -d '{}'
 # {"run_id":"...","status":"running"}
 ```
+
+List the uploaded crawl folders and files (the response includes folder names,
+file names, paths, sizes, and modification times):
+
+```bash
+curl --get http://localhost:8000/api/v1/drive/contents \
+  -H "X-Api-Key: ${AUDIT_API_KEY}" \
+  --data-urlencode "site=Diligentic" \
+  --data-urlencode "provider=Crawls" \
+  --data-urlencode "folder=2026-08"
+```
+
+The endpoint is read-only and does not create missing Drive folders. Omit
+`folder` to list the provider and all of its descendants.
 
 Download a crawl CSV from a month folder:
 
@@ -174,47 +268,33 @@ curl --get http://localhost:8000/api/v1/drive/files \
 ```
 
 The optional JSON body accepts `site` (a site name), `date` (an anchor date,
-useful for testing), and `crawl_only` (set to `true` to run only the six
-Screaming Frog crawl exports). A run with an empty body audits every scheduled
-site; the quarterly site is skipped automatically outside its quarter months.
-The endpoint returns `202` as soon as the background run starts; wait for the
+useful for testing), and `crawl_only` (set to `true` to run only the five
+crawl reports). A run with an empty body audits every scheduled site; the
+quarterly site is skipped automatically outside its quarter months. The endpoint
+returns `202` as soon as the background run starts; wait for the
 `Audit run <id> finished` log entry before checking Drive.
 
 ### Deployment (Render)
 
-Native web service (not Docker), **Runtime: Python**. No persistent disk is
-required — output goes to Google Drive.
-
-- **Build command** (installs uv, Java + Screaming Frog, then dependencies):
-  ```bash
-  set -e
-  sudo apt-get update
-  sudo apt-get install -y openjdk-17-jre-headless
-  wget -q https://download.screamingfrog.co.uk/products/seo-spider/screamingfrogseospider_24.3_amd64.deb
-  sudo dpkg -i screamingfrogseospider_24.3_amd64.deb
-  uv sync
-  ```
-- **Start command**:
-  ```bash
-  uv run fastapi run app.py
-  ```
+Use a **native Python** web service with `scripts/render_build.sh` as the build
+command and `uv run fastapi run app.py --host 0.0.0.0 --port $PORT` as the start
+command. The build runs `uv sync --frozen`, which installs the locked
+dependencies; the crawler is a pure-Python dependency, so the build needs no
+root, `sudo`, Java, or external binary. No persistent disk is required because
+audit CSVs are uploaded to Google Drive.
 
 Set the environment variables listed above on the service. `AUDIT_API_KEY`
 guards the trigger endpoint the same way it does locally.
 
-#### Screaming Frog on Linux (Render)
+#### Crawling on Render (Free Tier)
 
-- The Ubuntu `.deb` installs the `screamingfrogseospider` CLI on `PATH`, so
-  `SCREAMING_FROG_PATH` is usually unnecessary on Linux. If the binary lands
-  elsewhere, set `SCREAMING_FROG_PATH` to its absolute path.
-- Screaming Frog is a headless Java application; `openjdk-17-jre-headless`
-  (or newer) is required. The `.deb` pulls its X/lib dependencies in.
-- A **paid licence** is required to crawl more than 500 URLs and to use
-  command-line automation. Activate the licence once in the GUI (which writes
-  `screamingfrog.lic`) or place the licence file where the CLI can read it;
-  without it the crawl is limited to 500 URLs.
-- Large crawls need JVM heap: raise it via the `screamingfrogseospider`
-  `.vmoptions` file if the crawl aborts with an out-of-memory error.
+- The defaults are sized for a 512 MB / 0.1 CPU container: 4 parallel requests,
+  a 0.25 s delay per domain, a 2,000 URL cap, and a 30-minute wall-clock cap.
+  Raise `CRAWL_MAX_URLS` or `CRAWL_TIMEOUT_SECONDS` for a large site, and
+  `CRAWL_MAX_DEPTH` if the site nests deeply.
+- Free instances spin down when idle and the process can be frozen between
+  requests; a crawl that is cut short leaves a missing month on Drive and the
+  next run backfills it, because existing CSVs are never overwritten.
 - The crawl is triggered inside the FastAPI process (a background thread), not
   on the GitHub Actions runner — the workflow only posts to the API.
 
@@ -250,7 +330,8 @@ only adds a new provider folder — see the tree at the top of this document.
 
 ## Streams
 
-Each month produces up to seventeen CSV files per site:
+Each month produces up to sixteen CSV files per site (4 Search Console, 2 Bing,
+1 sitemap, 5 crawl, 1 Core Web Vitals, 3 GA4):
 
 - **GSC queries** / **GSC pages**: all traffic, columns
   `query,clicks,impressions,ctr,position` / `page,clicks,impressions,ctr,position`.
@@ -267,14 +348,11 @@ Each month produces up to seventeen CSV files per site:
   as-is. Sitemap indexes (`<sitemapindex>` roots and nested indexes, up to a
   depth of four) are followed automatically, and URLs are deduplicated and
   sorted by URL.
-- **Crawl**: one headless **Screaming Frog SEO Spider** crawl produces the five
-  required `:All` tab exports plus the Issues Overview report. They are stored
-  in `Crawls/YYYY-MM/` as `internal.csv` (`Internal`), `h1.csv` (`H1`),
-  `meta_description.csv` (`Meta Description`), `page_titles.csv`
-  (`Page Titles`), `images.csv` (`Images`), and `issues.csv` (`Issues`).
-  The original Screaming Frog column sets are preserved. Generated files are
-  read into memory, uploaded to Drive, and then removed with their temporary
-  directory.
+- **Crawl**: one `advertools` (Scrapy) crawl of the site produces the five
+  reports described in [Site crawl](#site-crawl). They are stored in
+  `Crawls/YYYY-MM/` as `internal.csv`, `h1.csv`, `meta_description.csv`,
+  `page_titles.csv`, and `issues.csv`. The crawl output is read into memory,
+  uploaded to Drive, and then removed with its temporary directory.
 - **Web Core Vitals**: one PageSpeed Insights snapshot for each device strategy,
   stored together in `web_core_vitals_YYYY-MM.csv` with columns
   `device,lcp_ms,inp_ms,cls`. The data is shared per site rather than stored
