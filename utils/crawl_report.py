@@ -7,17 +7,20 @@ The report is the single place where the crawl is interpreted:
   and non-200 detection possible for URLs that were never crawled;
 * it counts internal and external links, and drops the links a page makes to
   itself;
-* it derives indexability and the indexability reason;
+* it derives indexability from the rules in :mod:`scrapy_crawl.indexability`,
+  the same rules the spider applied while it crawled;
 * it reports one row per URL and issue in ``issues.csv``.
+
+URL normalisation and indexability are imported from the crawl module rather
+than reimplemented here, so the CSV cannot disagree with the feed it was built
+from.
 """
 
 from __future__ import annotations
 
-import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Sequence
-from urllib.parse import urlsplit, urlunsplit
+from typing import Any, Iterable, Mapping, Sequence
 
 from constants.crawl import (
     CRAWL_EXPORTS,
@@ -26,42 +29,51 @@ from constants.crawl import (
     TITLE_MAX_LENGTH_DEFAULT,
     TITLE_MIN_LENGTH_DEFAULT,
 )
+from scrapy_crawl.indexability import (
+    INDEXABLE,
+    NON_INDEXABLE,
+    REDIRECT_STATUSES,
+    evaluate_indexability,
+    is_html,
+)
 
-#: Every report is about HTML documents; PDFs, images, and other binary assets
-#: are still listed in ``internal.csv`` but never get content-element issues.
-_HTML_CONTENT_TYPE = re.compile(r"html|xml", re.IGNORECASE)
+#: Re-exported so the report and the crawler can never normalise a URL two
+#: different ways; ``from utils.crawl_report import normalize_url`` keeps
+#: working for callers outside this package.
+from scrapy_crawl.urls import normalize_url as normalize_url  # noqa: PLC0414
 
-_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
-
-INDEXABLE = "Indexable"
-NON_INDEXABLE = "Non-Indexable"
+__all__ = [
+    "CrawlPage",
+    "CrawlReport",
+    "CrawlThresholds",
+    "INDEXABLE",
+    "NON_INDEXABLE",
+    "SEVERITY_RANK",
+    "normalize_url",
+]
 
 SEVERITY_RANK = {"High": 0, "Medium": 1, "Low": 2}
 
 _MAX_LISTED_URLS = 3
 
 
-def normalize_url(url: str) -> str:
-    """Normalise a URL for status lookups and duplicate detection.
-
-    The fragment is dropped because it never identifies a different document,
-    and a trailing slash is only kept for the site root so ``/about`` and
-    ``/about/`` resolve to the same page.
-    """
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower()
-    if parts.port:
-        host = f"{host}:{parts.port}"
-    path = parts.path.rstrip("/") or "/"
-    return urlunsplit((parts.scheme.lower(), host, path, parts.query, ""))
-
-
 @dataclass
 class CrawlPage:
-    """One crawled URL, reduced to the fields the reports need."""
+    """One crawled URL, reduced to the fields the reports need.
+
+    ``status`` is the HTTP status code the crawl saw, or ``0`` when the request
+    never got a response -- the spider reports an unfetchable URL as status 0
+    with the reason in ``crawl_error`` rather than dropping it, because a link
+    that cannot be fetched is a broken link.
+
+    ``in_sitemap`` is ``True`` or ``False`` when a sitemap could be read, and
+    ``None`` when none could: "unknown" is reported differently from "not in
+    any sitemap", so a missing sitemap never looks like a page that was left
+    out on purpose.
+    """
 
     url: str
-    status: int | None = None
+    status: int = 0
     crawl_error: str = ""
     depth: int | None = None
     title: str = ""
@@ -73,13 +85,18 @@ class CrawlPage:
     redirect_to: str = ""
     word_count: int = 0
     internal_links: list[str] = field(default_factory=list)
-    internal_link_texts: list[str] = field(default_factory=list)
     external_links: list[str] = field(default_factory=list)
+    in_sitemap: bool | None = None
 
     @property
     def key(self) -> str:
         """Normalised URL used to look this page up in the status map."""
         return normalize_url(self.url)
+
+    @property
+    def responded(self) -> bool:
+        """Return whether the request got an HTTP response at all."""
+        return bool(self.status)
 
 
 @dataclass(frozen=True)
@@ -95,13 +112,11 @@ class CrawlThresholds:
 def _is_html(page: CrawlPage) -> bool:
     """Return whether a page is an HTML document.
 
-    A missing content type is treated as HTML: most sites declare
-    ``<meta charset>`` instead of an ``http-equiv`` content type, so advertools
-    has nothing to report for them.
+    Delegates to the same test the indexability rules use, so a page is never
+    reported as ``Non-HTML`` in one column and still checked for content
+    elements in another.
     """
-    if not page.content_type:
-        return True
-    return bool(_HTML_CONTENT_TYPE.search(page.content_type))
+    return is_html(page.content_type)
 
 
 def _has_content(page: CrawlPage) -> bool:
@@ -110,7 +125,7 @@ def _has_content(page: CrawlPage) -> bool:
     Titles, H1s, and meta descriptions are only meaningful on a successfully
     served HTML document; error pages are reported through their status code.
     """
-    return page.status is not None and 200 <= page.status < 300 and _is_html(page)
+    return 200 <= page.status < 300 and _is_html(page)
 
 
 def _format_urls(urls: Iterable[str]) -> str:
@@ -140,18 +155,29 @@ class _Issue:
 
 
 class CrawlReport:
-    """The interpreted result of one crawl of one site."""
+    """The interpreted result of one crawl of one site.
+
+    Args:
+        pages: the internal pages the crawl saw, redirects included.
+        thresholds: the on-page SEO length boundaries to judge them against.
+        external_statuses: normalised external URL -> HTTP status, as checked by
+            the crawl. ``0`` means the check itself failed (the host was
+            unreachable, or the request timed out), which counts as broken. A
+            URL that is absent was never checked, so it is not reported.
+    """
 
     def __init__(
         self,
         pages: Sequence[CrawlPage],
         *,
         thresholds: CrawlThresholds | None = None,
+        external_statuses: Mapping[str, int] | None = None,
     ) -> None:
         self.thresholds = thresholds or CrawlThresholds()
         self.pages: list[CrawlPage] = sorted(pages, key=lambda page: page.key)
+        self.external_statuses: dict[str, int] = dict(external_statuses or {})
         self._by_key: dict[str, CrawlPage] = {page.key: page for page in self.pages}
-        self._inlinks: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        self._inlinks: dict[str, list[str]] = defaultdict(list)
         self._collect_inlinks()
         self._details: dict[str, dict[str, Any]] = {
             page.key: self._describe(page) for page in self.pages
@@ -188,45 +214,39 @@ class CrawlReport:
 
         A redirect counts as a link to its destination: a page that links to an
         old URL sends the visitor to the destination, so the destination is not
-        an orphan.
+        an orphan. Self-links are dropped, and so is a page that already
+        contributed to the same target -- through a link or through a redirect,
+        and whether the two names normalise to the same URL -- so an inlink is
+        always a distinct source page.
         """
         for page in self.pages:
-            seen: set[str] = set()
-            for link, text in zip(page.internal_links, page.internal_link_texts):
-                key = normalize_url(link)
-                if key in seen or key == page.key:
+            contributed: set[str] = set()
+            for link in (*page.internal_links, page.redirect_to):
+                if not link:
                     continue
-                seen.add(key)
-                self._inlinks[key].append((page.url, text))
-            if page.redirect_to:
-                target = normalize_url(page.redirect_to)
-                if target != page.key and target not in seen:
-                    self._inlinks[target].append((page.url, ""))
+                key = normalize_url(link)
+                if not key or key == page.key or key in contributed:
+                    continue
+                contributed.add(key)
+                self._inlinks[key].append(page.url)
 
     def _indexability(self, page: CrawlPage) -> tuple[str, str, str]:
-        """Return ``(indexability, status, reason)`` for one page."""
-        if page.crawl_error or page.status is None:
-            reason = page.crawl_error or "No response status was returned"
-            return NON_INDEXABLE, "Crawl Error", reason
-        status = page.status
-        if status >= 500:
-            return NON_INDEXABLE, "Server Error (5xx)", f"HTTP {status}"
-        if status >= 400:
-            return NON_INDEXABLE, "Client Error (4xx)", f"HTTP {status}"
-        if status in _REDIRECT_STATUSES:
-            target = f" -> {page.redirect_to}" if page.redirect_to else ""
-            return NON_INDEXABLE, "Redirect", f"HTTP {status}{target}"
-        if status < 200:
-            return NON_INDEXABLE, "Informational (1xx)", f"HTTP {status}"
-        if page.noindex:
-            return (
-                NON_INDEXABLE,
-                "Blocked By Meta X-Robots-Tag",
-                "noindex / none robots directive",
-            )
-        if page.canonical and normalize_url(page.canonical) != page.key:
-            return NON_INDEXABLE, "Canonical", f"Canonical -> {page.canonical}"
-        return INDEXABLE, INDEXABLE, ""
+        """Return ``(indexability, status, reason)`` for one page.
+
+        The six rules live in :mod:`scrapy_crawl.indexability` and are applied
+        here to the same fields the spider applied, so the CSV carries the
+        verdict the crawl reached without depending on the feed having stored
+        it correctly.
+        """
+        verdict = evaluate_indexability(
+            url=page.url,
+            status=page.status,
+            content_type=page.content_type,
+            noindex=page.noindex,
+            canonical=page.canonical,
+            error=page.crawl_error,
+        )
+        return verdict.indexability, verdict.status, verdict.reason
 
     def _describe(self, page: CrawlPage) -> dict[str, Any]:
         """Build the per-page data shared by the reports and the issues."""
@@ -239,7 +259,7 @@ class CrawlReport:
             "indexability_status": indexability_status,
             "indexability_reason": reason,
             "inlinks": len(inlinks),
-            "unique_inlinks": len({url for url, _ in inlinks}),
+            "unique_inlinks": len(set(inlinks)),
             "outlinks": internal_link_count,
             "unique_outlinks": len({normalize_url(link) for link in page.internal_links}),
             "external_outlinks": len(page.external_links),
@@ -256,7 +276,7 @@ class CrawlReport:
             rows.append(
                 {
                     "URL": page.url,
-                    "Status Code": page.status if page.status is not None else 0,
+                    "Status Code": page.status,
                     "Indexability": details["indexability"],
                     "Indexability Status": details["indexability_status"],
                     "Indexability Reason": details["indexability_reason"],
@@ -269,6 +289,13 @@ class CrawlReport:
                     "Word Count": page.word_count,
                     "Content Type": page.content_type,
                     "Crawl Depth": page.depth if page.depth is not None else "",
+                    "Title": page.title,
+                    "Redirect target": page.redirect_to,
+                    # Blank means "not known": no sitemap could be read, so the
+                    # crawl has nothing to say about this page either way.
+                    "In Sitemap": (
+                        "" if page.in_sitemap is None else page.in_sitemap
+                    ),
                 }
             )
         return rows
@@ -350,6 +377,7 @@ class CrawlReport:
         issues.extend(self._duplicate_issues())
         issues.extend(self._status_issues())
         issues.extend(self._link_issues())
+        issues.extend(self._external_link_issues())
         issues.extend(self._canonical_issues())
         issues.sort(
             key=lambda issue: (
@@ -527,7 +555,7 @@ class CrawlReport:
         """One row per internal URL that is not a 200."""
         issues: list[_Issue] = []
         for page in self.pages:
-            if page.status is None:
+            if not page.responded:
                 issues.append(
                     _Issue(
                         page.url,
@@ -555,7 +583,14 @@ class CrawlReport:
         return issues
 
     def _link_issues(self) -> list[_Issue]:
-        """Broken, redirecting, and unverifiable internal links."""
+        """Broken, redirecting, and unverifiable internal links.
+
+        A link is unverifiable when no row exists for it: the crawl reached its
+        page budget first, robots.txt refused the path, the response was over
+        the size limit, or the URL was off the site. Those links are listed
+        separately rather than called broken, because the crawl has no evidence
+        either way -- but a reader should still know the audit never looked.
+        """
         issues: list[_Issue] = []
         for page in self.pages:
             broken: dict[str, str] = {}
@@ -565,13 +600,13 @@ class CrawlReport:
                 target = self._by_key.get(normalize_url(link))
                 if target is None:
                     unverified.append(link)
-                elif target.crawl_error or target.status is None:
+                elif not target.responded:
                     broken[link] = (
                         f"crawl error ({target.crawl_error or 'no response'})"
                     )
                 elif target.status >= 400:
                     broken[link] = f"HTTP {target.status}"
-                elif target.status in _REDIRECT_STATUSES:
+                elif target.status in REDIRECT_STATUSES:
                     where = f" -> {target.redirect_to}" if target.redirect_to else ""
                     redirecting[link] = f"HTTP {target.status}{where}"
             for link, detail in sorted(broken.items()):
@@ -601,8 +636,57 @@ class CrawlReport:
                         "Internal link not crawled",
                         "Internal links",
                         "Low",
-                        f"{len(unverified)} link(s) outside the crawl budget: "
+                        f"{len(unverified)} link(s) the crawl did not fetch: "
                         f"{_format_urls(unverified)}",
+                    )
+                )
+        return issues
+
+    def _external_link_issues(self) -> list[_Issue]:
+        """Broken and redirecting external links.
+
+        The crawl verified each external link with a ``HEAD`` request, retrying
+        with ``GET`` when the server refused it, so a status of ``0`` means the
+        host could not be reached at all. A link the crawl never checked (it
+        stopped at its external-link limit) is not reported: silence would be
+        wrong, but so would calling a link broken on the strength of no result.
+        """
+        if not self.external_statuses:
+            return []
+        issues: list[_Issue] = []
+        for page in self.pages:
+            broken: dict[str, str] = {}
+            redirecting: dict[str, str] = {}
+            for link in dict.fromkeys(page.external_links):
+                status = self.external_statuses.get(normalize_url(link))
+                if status is None:
+                    continue
+                if not status or status >= 400:
+                    broken[link] = (
+                        f"the host could not be reached ({status})"
+                        if not status
+                        else f"HTTP {status}"
+                    )
+                elif status in REDIRECT_STATUSES:
+                    redirecting[link] = f"HTTP {status}"
+            for link, detail in sorted(broken.items()):
+                issues.append(
+                    _Issue(
+                        page.url,
+                        "Broken external link",
+                        "External links",
+                        "High",
+                        f"{link} ({detail})",
+                    )
+                )
+            for link, detail in sorted(redirecting.items()):
+                issues.append(
+                    _Issue(
+                        page.url,
+                        "External link to a redirect",
+                        "External links",
+                        "Low",
+                        f"{link} ({detail})",
                     )
                 )
         return issues
@@ -618,7 +702,7 @@ class CrawlReport:
                 # Not detectable: the canonical was never crawled, so its status
                 # is unknown. Blocking canonical targets are also not crawled.
                 continue
-            if target.crawl_error or target.status is None:
+            if not target.responded:
                 issues.append(
                     _Issue(
                         page.url,

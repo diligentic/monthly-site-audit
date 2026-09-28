@@ -27,6 +27,9 @@ INTERNAL_COLUMNS: tuple[str, ...] = (
     "Word Count",
     "Content Type",
     "Crawl Depth",
+    "Title",
+    "Redirect target",
+    "In Sitemap",
 )
 
 H1_COLUMNS: tuple[str, ...] = ("URL", "H1", "H1 count", "H1 length")

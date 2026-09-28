@@ -2,12 +2,11 @@
 
 Collects performance data from Google Search Console and Bing Webmaster
 (queries, pages), Google Analytics 4 (traffic by source/medium), sitemap and
-Core Web Vitals snapshots, plus five internal crawl reports built with
-[advertools](https://github.com/nieber/advertools) (Scrapy). Every stream is
-serialised to a CSV **in memory** and uploaded to **Google Drive** under the
-`audit_data/` folder. Crawl artifacts live in a temporary directory that is
-deleted right after upload — no crawl CSV is ever written to a persistent disk
-or a project folder.
+Core Web Vitals snapshots, plus five internal crawl reports built by a Scrapy
+spider in [`scrapy_crawl/`](scrapy_crawl). Every stream is serialised to a CSV
+**in memory** and uploaded to **Google Drive** under the `audit_data/` folder.
+Crawl artifacts live in a temporary directory that is deleted right after upload
+— no crawl CSV is ever written to a persistent disk or a project folder.
 
 ```
 audit_data/
@@ -96,11 +95,17 @@ The CLI and the HTTP API below share the exact same orchestration
 
 ## Site crawl
 
-The crawl is delegated to **advertools** (`advertools.crawl()`, a Scrapy spider
-in `services/crawl.py`). It is a pure-Python dependency: no Java runtime, no
+The crawl is a purpose-built Scrapy spider in
+[`scrapy_crawl/`](scrapy_crawl) (`SeoAuditSpider`), with the audit wiring in
+`services/crawl.py`. It is a pure-Python dependency: no Java runtime, no
 external crawler binary, and no licence. Only the configured domain is crawled;
-`www` and the apex host are both treated as internal, and external links are
-counted but never followed.
+`www`, the apex host, and any subdomain all count as internal, and external
+links are verified rather than crawled.
+
+The spider runs in its own child process. Scrapy's reactor is process-wide and
+single-use, so a crawl inside the FastAPI service would install a Twisted
+reactor next to Uvicorn's event loop; a child process also means the crawler's
+memory is returned to the container as soon as the crawl ends.
 
 Flow:
 
@@ -108,9 +113,11 @@ Flow:
    exist, that month's crawl is skipped entirely. Existing flat files are
    migrated into the month folder first, without refetching them.
 2. For a month with missing output, Python creates a private temporary folder and
-   runs one `advertools.crawl()` over the site, capped by the URL, depth, and
-   wall-clock limits below.
-3. The jsonlines output is read line by line and reduced to the five reports in
+   starts one child-process crawl over the site, capped by the URL, depth, and
+   wall-clock limits below. The spider streams a JSONL feed — one record per
+   internal page, one per checked external link, one per sitemap file — so
+   nothing accumulates in memory while the crawl runs.
+3. The feed is read line by line and reduced to the five reports in
    `utils/crawl_report.py`, then serialised in memory and uploaded to
    `Crawls/YYYY-MM/` as `internal.csv`, `h1.csv`, `meta_description.csv`,
    `page_titles.csv`, and `issues.csv`. Outputs already present on Drive are not
@@ -123,10 +130,32 @@ more than one historical month, the site is still crawled only once during the
 audit run and the resulting rows are reused for each missing month. It is crawled again only for a later audit run that still has missing output.
 
 A crawl that produces no usable response fails the run instead of uploading
-empty reports: advertools does not report a failed crawl, so a site that cannot
-be reached would otherwise yield five all-error CSVs. A *partially* failed
-crawl is normal and still produces reports, with the errored URLs listed in
-`issues.csv`.
+empty reports: a site that cannot be reached would otherwise yield five
+all-error CSVs. A *partially* failed crawl is normal and still produces
+reports, with the errored URLs listed in `internal.csv` (status `0`, with the
+underlying error in `Indexability Reason`) and in `issues.csv`.
+
+#### Indexability
+
+`Indexability` is `Indexable` or `Non-Indexable`, and `Indexability Status` names
+the single reason a page is out of the index. The six rules are evaluated in a
+fixed order and the first match wins — a 404 page that also carries `noindex` is
+a broken page first, and a PDF is a non-HTML document whether or not it is
+missing:
+
+| Order | Condition                                | `Indexability Status` |
+| ----- | ---------------------------------------- | --------------------- |
+| 1     | a 3xx status                             | `Redirected`          |
+| 2     | a non-HTML content type                  | `Non-HTML`            |
+| 3     | any status other than 200                | `Non-200 (<code>)`    |
+| 4     | `noindex` in the meta tags or `X-Robots-Tag` | `Noindex`          |
+| 5     | a `rel=canonical` pointing elsewhere     | `Canonicalised`       |
+| 6     | otherwise                                | `Indexable`           |
+
+`Indexability Reason` keeps a free-text detail for the same verdict (the status
+code, the content type, the canonical URL, or the crawler error). The rules live
+in one place, [`scrapy_crawl/indexability.py`](scrapy_crawl/indexability.py),
+and are applied both while crawling and while writing the CSV.
 
 To run only the five crawl reports without calling the other audit sources:
 
@@ -138,21 +167,54 @@ Omit `--date` to use today. Omit `--site` to process all sites that are due.
 This uploads to Google Drive, so verify a run with the read-only Drive listing
 in [Checking a run on Drive](#checking-a-run-on-drive).
 
+To check a crawl by hand — no Drive, no audit, just the feed and a summary:
+
+```bash
+uv run python -m scrapy_crawl --site https://diligentic.ca --output /tmp/crawl.jsonl
+```
+
+```
+Site:            https://diligentic.ca
+Feed:            /tmp/crawl.jsonl
+Pages crawled:   118
+Indexable:       96
+External links:  24 checked, 2 broken
+Sitemap:         118 URL(s)
+```
+
+That is the same command the service runs; add `--sitemap <url>` to read a
+sitemap from another host.
+
 ### Report columns
 
 | File                   | Columns                                                                                                                                                                                            |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `internal.csv`         | `URL,Status Code,Indexability,Indexability Status,Indexability Reason,Canonical URL,Inlinks,Unique Inlinks,Outlinks,Unique Outlinks,External Outlinks,Word Count,Content Type,Crawl Depth`            |
+| `internal.csv`         | `URL,Status Code,Indexability,Indexability Status,Indexability Reason,Canonical URL,Inlinks,Unique Inlinks,Outlinks,Unique Outlinks,External Outlinks,Word Count,Content Type,Crawl Depth,Title,Redirect target,In Sitemap` |
 | `h1.csv`               | `URL,H1,H1 count,H1 length` (one row per H1; a page without an H1 gets one empty row)                                                                                                                 |
 | `meta_description.csv` | `URL,Meta Description,Meta Description length,Missing Meta Description`                                                                                                                              |
 | `page_titles.csv`      | `URL,Page Title,Page Title length,Missing Page Title`                                                                                                                                                 |
 | `issues.csv`           | `URL,Issue,Category,Severity,Details` — one row per URL **and** detected issue, never a summary                                                                                                    |
 
+Notes on the `internal.csv` columns:
+
+- `URL` is the address that was **requested**, not the one the response came
+  from. Redirects are not followed automatically, so a redirect and the page it
+  points at are two separate rows with their own status codes.
+- `Title`, `Redirect target`, and `In Sitemap` are appended to the historical
+  column list. H2–H6 counts are not columns — one row per URL is kept, and the
+  H1 report stays the detailed one.
+- `In Sitemap` is `True` or `False` when a sitemap could be read, and **blank**
+  when none could: "unknown" is deliberately different from "not in any
+  sitemap".
+- `Unique Inlinks` counts distinct internal pages that link to the URL, ignoring
+  a page's links to itself. A redirect counts as a link to its destination.
+
 `issues.csv` reports: missing, duplicate, too short, and too long page titles;
 the same four for meta descriptions; missing H1; multiple H1s; duplicate H1;
 missing canonical; a canonical pointing at a non-200 URL; broken internal
 links; internal links to a redirect; internal links that were never crawled
-(page/depth/time budget); and every internal URL that is not a 200. Content
+(page/depth/time budget); every internal URL that is not a 200; broken external
+links; and external links to a redirect. Content
 elements are only checked on 2xx HTML documents, so a PDF or a 404 page is
 reported through its status code instead of as "missing title".
 
@@ -164,17 +226,23 @@ content check applies to. A PDF, a 404, or a redirect keeps an empty cell and is
 
 | Variable                             | Default                       | Purpose                                                     |
 | ------------------------------------ | ----------------------------- | ----------------------------------------------------------- |
-| `CRAWL_MAX_URLS`                     | `2000`                        | Hard page-count cap (`CLOSESPIDER_PAGECOUNT`).              |
+| `CRAWL_MAX_URLS`                     | `600`                         | Page budget. The spider stops requesting pages here, so the report never has more rows than this. |
 | `CRAWL_MAX_DEPTH`                    | `10`                          | Maximum link depth, minimum `1` (the start URL is depth 0). |
 | `CRAWL_TIMEOUT_SECONDS`              | `1800`                        | Wall-clock cap for one crawl.                               |
 | `CRAWL_REQUEST_TIMEOUT_SECONDS`      | `20`                          | Per-request timeout.                                        |
-| `CRAWL_CONCURRENT_REQUESTS`          | `4`                           | Parallel downloads (also capped per domain).                |
+| `CRAWL_CONCURRENT_REQUESTS`          | `8`                           | Parallel downloads (also capped per domain).                |
 | `CRAWL_DOWNLOAD_DELAY`               | `0.25`                        | Delay between requests to the same domain, in seconds.      |
+| `CRAWL_AUTOTHROTTLE`                 | `1`                           | Slow down automatically when the site responds slowly.      |
+| `CRAWL_AUTOTHROTTLE_START_DELAY`     | `0.25`                        | Delay AutoThrottle starts from.                             |
+| `CRAWL_AUTOTHROTTLE_TARGET_CONCURRENCY` | `1.0`                      | Requests in flight per domain AutoThrottle aims for.        |
 | `CRAWL_RETRY_TIMES`                  | `2`                           | Retries per request.                                        |
 | `CRAWL_USER_AGENT`                   | `DiligenticSiteAudit/1.0 ...` | Crawler user agent.                                         |
 | `CRAWL_ROBOTS_TXT`                   | `1`                           | Obey `robots.txt`; set to `0` only for testing.             |
 | `CRAWL_RESPONSE_SIZE_LIMIT_MB`       | `5.0`                         | Responses larger than this are skipped.                     |
 | `CRAWL_EXCLUDE_URL_PARAMS`           | `utm_*,gclid,fbclid,mc_*`     | Comma-separated query parameters that do not identify a page. |
+| `CRAWL_EXTERNAL_LINK_LIMIT`          | `200`                         | Maximum distinct external URLs to verify.                   |
+| `CRAWL_EXTERNAL_HOST_LIMIT`          | `100`                         | Maximum distinct external hosts to verify.                  |
+| `CRAWL_SITEMAP`                      | `1`                           | Read the XML sitemaps for the `In Sitemap` column.          |
 | `CRAWL_LOG_LEVEL`                    | `INFO`                        | Scrapy log level.                                           |
 | `CRAWL_TITLE_MIN_LENGTH`             | `15`                          | Below this a title is "too short".                          |
 | `CRAWL_TITLE_MAX_LENGTH`             | `60`                          | Above this a title is "too long".                           |
@@ -186,16 +254,25 @@ Drive, so new reports stay comparable with them.
 
 ### Known limitations
 
-- Scrapy follows redirects and yields one record per final URL. The hop is
-  restored from the redirect chain (with its real status and destination), but
-  only when the destination had not already been requested — a URL that is both
-  linked directly and redirected to is reported once, under its final URL.
 - The crawler is a best-effort audit crawl, not a validator: JavaScript-rendered
   content is not executed, so titles, H1s, and meta descriptions are read from
   the served HTML.
 - Pages blocked by `robots.txt`, larger than the response limit, or beyond the
   URL/depth/time budget appear in `issues.csv` as "Internal link not crawled"
   rather than being fetched.
+- External links are verified with a `HEAD` request, retried once with `GET` when
+  the server answers `405`, `403`, or `501`. Some servers refuse `HEAD` *and*
+  misreport `GET`, and a link behind a bot filter reads as broken.
+- `CRAWL_MAX_URLS` is enforced by the spider as it *requests* each page, not
+  when the response comes back. That matters: Scrapy keeps several requests in
+  flight and queues every link a page offers, so a budget checked on the way
+  back from a page would be discovered only after the whole frontier had been
+  scheduled. Scrapy's own `CLOSESPIDER_PAGECOUNT` sits above it as a ceiling
+  for pathological input, and counts every response, including the sitemap and
+  external-link checks.
+- External links beyond `CRAWL_EXTERNAL_LINK_LIMIT` / `CRAWL_EXTERNAL_HOST_LIMIT`
+  are left unchecked (the crawl logs how many) and are therefore not reported as
+  broken.
 
 ### Checking a run on Drive
 
@@ -276,27 +353,37 @@ returns `202` as soon as the background run starts; wait for the
 
 ### Deployment (Render)
 
-Use a **native Python** web service with `scripts/render_build.sh` as the build
-command and `uv run fastapi run app.py --host 0.0.0.0 --port $PORT` as the start
-command. The build runs `uv sync --frozen`, which installs the locked
-dependencies; the crawler is a pure-Python dependency, so the build needs no
-root, `sudo`, Java, or external binary. No persistent disk is required because
-audit CSVs are uploaded to Google Drive.
+Use a **native Python** web service and set these two fields on the Render
+service — no build script is needed.
+
+| Field          | Value                                              |
+| -------------- | -------------------------------------------------- |
+| Build command  | `uv sync --frozen`                                 |
+| Start command  | `uv run fastapi run app.py --host 0.0.0.0 --port $PORT` |
+
+`uv sync --frozen` installs exactly the locked dependencies; the crawler is a
+pure-Python dependency, so the build needs no root, `sudo`, Java, or external
+binary. No persistent disk is required because audit CSVs are uploaded to
+Google Drive.
 
 Set the environment variables listed above on the service. `AUDIT_API_KEY`
 guards the trigger endpoint the same way it does locally.
 
 #### Crawling on Render (Free Tier)
 
-- The defaults are sized for a 512 MB / 0.1 CPU container: 4 parallel requests,
-  a 0.25 s delay per domain, a 2,000 URL cap, and a 30-minute wall-clock cap.
+- The defaults are sized for a 512 MB / 0.1 CPU container: 8 parallel requests,
+  a 0.25 s delay per domain, a 600 URL budget, and a 30-minute wall-clock cap.
   Raise `CRAWL_MAX_URLS` or `CRAWL_TIMEOUT_SECONDS` for a large site, and
   `CRAWL_MAX_DEPTH` if the site nests deeply.
 - Free instances spin down when idle and the process can be frozen between
   requests; a crawl that is cut short leaves a missing month on Drive and the
   next run backfills it, because existing CSVs are never overwritten.
-- The crawl is triggered inside the FastAPI process (a background thread), not
-  on the GitHub Actions runner — the workflow only posts to the API.
+- The crawl is triggered inside the FastAPI process (a background thread), which
+  then waits on a child process for the crawler; the workflow only posts to the
+  API.
+- The child process needs the project on `sys.path`, which the service already
+  has. It inherits the service's environment, so the `CRAWL_*` variables apply to
+  the crawl exactly as they do locally.
 
 ### GitHub Actions
 
@@ -348,7 +435,8 @@ Each month produces up to sixteen CSV files per site (4 Search Console, 2 Bing,
   as-is. Sitemap indexes (`<sitemapindex>` roots and nested indexes, up to a
   depth of four) are followed automatically, and URLs are deduplicated and
   sorted by URL.
-- **Crawl**: one `advertools` (Scrapy) crawl of the site produces the five
+- **Crawl**: one Scrapy crawl of the site (`scrapy_crawl/`, run in a child
+  process) produces the five
   reports described in [Site crawl](#site-crawl). They are stored in
   `Crawls/YYYY-MM/` as `internal.csv`, `h1.csv`, `meta_description.csv`,
   `page_titles.csv`, and `issues.csv`. The crawl output is read into memory,

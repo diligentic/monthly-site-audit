@@ -142,6 +142,7 @@ def crawl_streams(site: Site) -> tuple[Stream, ...]:
                 fetch_crawl_export,
                 export=export,
                 site_url=site.bing_site_url,
+                sitemap_url=site.sitemap_url,
             ),
             drive_path=partial(
                 _month_drive_relative_path,
