@@ -88,6 +88,7 @@ _MAX_SITEMAP_BYTES = 10 * 1024 * 1024
 #: Statuses that mean "this server will not answer a HEAD request", not "this
 #: link is broken". The check falls back to GET for exactly these.
 _HEAD_UNSUPPORTED_STATUSES = frozenset({403, 405, 501})
+_MAX_EXTERNAL_REDIRECTS = 10
 
 
 def _collapse(value: str) -> str:
@@ -636,7 +637,7 @@ class SeoAuditSpider(Spider):
         link is broken -- plenty of servers still refuse it. Those three codes
         are retried once with GET before anything is called broken.
         """
-        url = response.url
+        original_url = response.meta.get("external_url") or response.url
         if (
             response.request.method == "HEAD"
             and response.status in _HEAD_UNSUPPORTED_STATUSES
@@ -647,15 +648,41 @@ class SeoAuditSpider(Spider):
                 callback=self.parse_external,
                 errback=self.handle_external_failure,
                 meta={
-                    "external_url": url,
+                    "external_url": original_url,
                     "allow_offsite": True,
                     "retried_from_head": response.status,
                 },
                 dont_filter=True,
             )
             return
+        if response.status in REDIRECT_STATUSES:
+            location = response.headers.get(b"Location", b"").decode(
+                "utf-8", errors="replace"
+            ).strip()
+            target = resolve_url(location, response.url) if location else ""
+            visited = set(response.meta.get("external_redirects", ()))
+            visited.add(normalize_url(response.url))
+            target_key = normalize_url(target)
+            if (
+                target
+                and target_key not in visited
+                and len(visited) < _MAX_EXTERNAL_REDIRECTS
+            ):
+                yield Request(
+                    target,
+                    method="GET" if response.status == 303 else response.request.method,
+                    callback=self.parse_external,
+                    errback=self.handle_external_failure,
+                    meta={
+                        "external_url": original_url,
+                        "allow_offsite": True,
+                        "external_redirects": tuple(visited),
+                    },
+                    dont_filter=True,
+                )
+                return
         yield ExternalRecord(
-            url=url, status=response.status, method=response.request.method
+            url=original_url, status=response.status, method=response.request.method
         ).as_item()
 
     def handle_external_failure(self, failure: Failure) -> Iterator[Any]:

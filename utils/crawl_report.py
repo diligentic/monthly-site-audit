@@ -661,6 +661,10 @@ class CrawlReport:
                 status = self.external_statuses.get(normalize_url(link))
                 if status is None:
                     continue
+                # Some sites deliberately reject automated link checks. These
+                # responses do not establish that the destination is broken.
+                if status in {401, 403, 429, 999}:
+                    continue
                 if not status or status >= 400:
                     broken[link] = (
                         f"the host could not be reached ({status})"
