@@ -65,22 +65,6 @@ class RunResponse(BaseModel):
     status: str
 
 
-class DriveItem(BaseModel):
-    id: str
-    name: str
-    path: str
-    type: str
-    mime_type: str | None = None
-    size: str | None = None
-    modified_time: str | None = None
-    created_time: str | None = None
-
-
-class DriveContentsResponse(BaseModel):
-    path: str
-    items: list[DriveItem]
-
-
 def _require_api_key(
     x_api_key: str | None = Header(default=None, alias="X-Api-Key"),
 ) -> None:
@@ -112,21 +96,6 @@ def _validate_drive_scope(site: str, provider: str) -> None:
                 f"{', '.join(sorted(provider_names))}."
             ),
         )
-
-
-def _normalize_drive_folder_query(folder: str) -> str:
-    """Validate a provider-relative folder before constructing a Drive path."""
-    normalized = folder.strip("/")
-    if not normalized:
-        return ""
-    if "\\" in normalized or any(
-        part in {"", ".", ".."} for part in normalized.split("/")
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="folder must be a safe path relative to the provider folder.",
-        )
-    return normalized
 
 
 class RunInProgressError(RuntimeError):
@@ -239,48 +208,6 @@ def create_run(payload: RunRequest | None = None) -> RunResponse:
             detail=f"An audit run is already in progress (run {error}).",
         ) from error
     return RunResponse(run_id=run_id, status="running")
-
-
-@app.get(
-    "/api/v1/drive/contents",
-    response_model=DriveContentsResponse,
-    tags=["drive"],
-    dependencies=[Depends(_require_api_key)],
-)
-def list_drive_contents(
-    site: str = Query(..., description="Site folder, for example Diligentic."),
-    provider: str = Query(..., description="Data folder, for example Crawls."),
-    folder: str = Query(
-        default="",
-        description=(
-            "Optional provider-relative folder path, for example 2026-08. "
-            "All descendants are returned recursively."
-        ),
-    ),
-) -> DriveContentsResponse:
-    """List uploaded Drive folders/files without downloading their contents."""
-    _validate_drive_scope(site, provider)
-    normalized_folder = _normalize_drive_folder_query(folder)
-    relative_folder = f"{site}/{provider}"
-    if normalized_folder:
-        relative_folder = f"{relative_folder}/{normalized_folder}"
-    try:
-        items = GoogleDriveStorage().list_tree(relative_folder)
-    except ValueError as error:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=str(error),
-        ) from error
-    except (GoogleDriveError, ConfigurationError) as error:
-        logger.exception("Google Drive listing failed for %s", relative_folder)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Unable to list the requested Drive contents.",
-        ) from error
-    return DriveContentsResponse(
-        path=relative_folder,
-        items=[DriveItem(**item) for item in items],
-    )
 
 
 @app.get(

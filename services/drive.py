@@ -93,28 +93,14 @@ def _error_message(error: Exception) -> str:
         return str(error)
 
 
-def _normalize_folder_path(relative_folder: str) -> str:
-    """Validate a folder path relative to the audit root.
-
-    Unlike :func:`_normalize_relative_path`, an empty path is valid because it
-    represents the audit root itself.
-    """
-    normalized_path = relative_folder.strip("/")
-    if not normalized_path:
-        return ""
-    if "\\" in normalized_path or any(
-        part in {"", ".", ".."} for part in normalized_path.split("/")
-    ):
-        raise ValueError("relative_folder must be a safe path below the audit root")
-    return normalized_path
-
-
 def _normalize_relative_path(relative_path: str) -> str:
     """Validate a file path relative to the audit root and return it normalized."""
-    normalized_path = _normalize_folder_path(relative_path)
-    if not normalized_path:
+    normalized_path = relative_path.strip("/")
+    if not normalized_path or "\\" in normalized_path or any(
+        part in {"", ".", ".."} for part in normalized_path.split("/")
+    ):
         raise ValueError(
-            "relative_path must be a non-empty path below the audit root"
+            "relative_path must be a safe, non-empty path below the audit root"
         )
     return normalized_path
 
@@ -164,61 +150,6 @@ class GoogleDriveStorage:
                 f"Google Drive returned an unexpected response for {normalized_path!r}."
             )
         return normalized_path.rsplit("/", 1)[-1], content
-
-    def list_tree(self, relative_folder: str = "") -> list[dict[str, Any]]:
-        """List all folders and files below a path without creating anything.
-
-        Returned paths are relative to the audit root, for example
-        ``Diligentic/Crawls/2026-08/internal.csv``. Missing paths return an
-        empty list, which makes this safe to use for a read-only
-        status/inspection endpoint.
-        """
-        normalized_folder = _normalize_folder_path(relative_folder)
-        folder_id = self._find_folder_path(normalized_folder)
-        if folder_id is None:
-            return []
-
-        items: list[dict[str, Any]] = []
-        pending: list[tuple[str, str]] = [(folder_id, normalized_folder)]
-        while pending:
-            current_id, current_path = pending.pop()
-            for child in self._list_children(current_id):
-                name = child.get("name")
-                file_id = child.get("id")
-                if (
-                    not isinstance(name, str)
-                    or not name
-                    or not isinstance(file_id, str)
-                ):
-                    continue
-                child_path = f"{current_path}/{name}" if current_path else name
-                mime_type = child.get("mimeType")
-                item: dict[str, Any] = {
-                    "id": file_id,
-                    "name": name,
-                    "path": child_path,
-                    "type": (
-                        "folder" if mime_type == _FOLDER_MIME_TYPE else "file"
-                    ),
-                }
-                if isinstance(mime_type, str):
-                    item["mime_type"] = mime_type
-                for source_key, target_key in (
-                    ("size", "size"),
-                    ("modifiedTime", "modified_time"),
-                    ("createdTime", "created_time"),
-                ):
-                    value = child.get(source_key)
-                    if value is not None:
-                        item[target_key] = str(value)
-                items.append(item)
-                if item["type"] == "folder":
-                    pending.append((file_id, child_path))
-
-        items.sort(
-            key=lambda item: (item["type"] != "folder", item["path"].casefold())
-        )
-        return items
 
     def upload_csv(
         self,
@@ -367,34 +298,6 @@ class GoogleDriveStorage:
                 self._folder_ids[prefix] = folder_id
         return folder_id
 
-    def _find_folder_path(self, relative_folder: str) -> str | None:
-        """Resolve a folder path without creating missing Drive folders."""
-        normalized_folder = _normalize_folder_path(relative_folder)
-        if self._audit_root_id is not None:
-            folder_id = self._audit_root_id
-        else:
-            base_id = os.getenv(ROOT_FOLDER_ID_ENV_VAR, "").strip() or "root"
-            folder_id = self._find_folder(ROOT_FOLDER_NAME, base_id)
-            if folder_id is None:
-                return None
-            self._audit_root_id = folder_id
-
-        prefix = ""
-        for segment in normalized_folder.split("/"):
-            if not segment:
-                continue
-            prefix = f"{prefix}/{segment}" if prefix else segment
-            cached = self._folder_ids.get(prefix)
-            if cached is not None:
-                folder_id = cached
-                continue
-            found = self._find_folder(segment, folder_id)
-            if found is None:
-                return None
-            folder_id = found
-            self._folder_ids[prefix] = folder_id
-        return folder_id
-
     def _find_folder(self, name: str, parent_id: str) -> str | None:
         query = (
             f"name = '{_escape_query(name)}' "
@@ -428,34 +331,6 @@ class GoogleDriveStorage:
                 f"{_error_message(error)}"
             ) from error
         return created["id"]
-
-    def _list_children(self, folder_id: str) -> list[dict[str, Any]]:
-        """Return all non-trashed children of a Drive folder, following pages."""
-        children: list[dict[str, Any]] = []
-        page_token: str | None = None
-        try:
-            while True:
-                request: dict[str, Any] = {
-                    "q": f"'{folder_id}' in parents and trashed = false",
-                    "fields": (
-                        "nextPageToken,files(id,name,mimeType,size,"
-                        "modifiedTime,createdTime)"
-                    ),
-                    "pageSize": 1000,
-                }
-                if page_token:
-                    request["pageToken"] = page_token
-                response = self._service.files().list(**request).execute()
-                children.extend(response.get("files") or [])
-                page_token = response.get("nextPageToken")
-                if not page_token:
-                    break
-        except (GoogleAPICallError, HttpError, OSError) as error:
-            raise GoogleDriveError(
-                f"Failed to list Google Drive folder {folder_id!r}: "
-                f"{_error_message(error)}"
-            ) from error
-        return children
 
     # ------------------------------------------------------------------
     # File lookup
