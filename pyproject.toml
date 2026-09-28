@@ -5,11 +5,13 @@ description = "Monthly search, analytics, crawl, and Core Web Vitals CSV collect
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "defusedxml>=0.7.1",
     "fastapi[standard]>=0.141.1",
     "google-api-python-client>=2.149.0",
     "google-auth>=2.36.0",
-    "google-auth-oauthlib>=1.2.1",
     "python-dotenv>=1.2.3",
     "requests>=2.34.2",
+    "scrapy>=2.13",
+    "tldextract>=5.3.2",
 ]
 

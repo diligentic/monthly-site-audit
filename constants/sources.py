@@ -8,4 +8,3 @@ class Provider(Enum):
     SITEMAP = "Sitemap"
     WEB_CORE_VITALS = "WebCoreVitals"
     CRAWL = "Crawls"
-    IMAGES = "Images"
