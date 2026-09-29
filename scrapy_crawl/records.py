@@ -232,6 +232,30 @@ class Feed:
         """Return normalised external URL -> HTTP status (0 = request failed)."""
         return {url: record.status for url, record in self.external.items()}
 
+    @property
+    def sitemap_page_urls(self) -> tuple[str, ...]:
+        """Return the page URLs the sitemaps list, as they were published.
+
+        ``sitemap_urls`` holds the normalised keys that answer "is this page in
+        the sitemap?". This holds the addresses themselves, which is what a
+        consumer that has to *request* a URL needs -- the URL Inspection API,
+        for instance. Normalisation drops the trailing slash of ``/about/``, and
+        a search engine is asked about the address the site published.
+
+        A ``<sitemapindex>`` is skipped: it lists sitemap files, not pages. The
+        first address seen for a normalised key wins, so a page listed as both
+        ``/about`` and ``/about/`` is one entry. Empty when no ``<urlset>`` was
+        read, which is the same "no sitemap was readable" answer as
+        ``sitemap_urls is None``.
+        """
+        unique: dict[str, str] = {}
+        for record in self.sitemaps:
+            if record.is_index:
+                continue
+            for url in record.urls:
+                unique.setdefault(normalize_url(url) or url, url)
+        return tuple(sorted(unique.values()))
+
 
 def unusable_crawl_reason(feed: Feed) -> str:
     """Return why a finished crawl cannot produce a report, or ``""`` if it can.

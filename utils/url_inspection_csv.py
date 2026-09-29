@@ -5,6 +5,12 @@ The report is written to Google Drive as
 layout of the other Search Console exports rather than the crawl reports'
 ``YYYY-MM/`` folders: it is a point-in-time snapshot of indexing, not a
 per-month series of measurements.
+
+It covers two lists of URLs -- the pages the crawl found and the URLs the XML
+sitemaps list -- because each answers a question the other cannot. A page in
+the sitemap that the crawl never reached is precisely the URL whose index
+status needs reporting, and the "Source" column says which list a row came
+from.
 """
 
 from datetime import date
@@ -13,11 +19,13 @@ from typing import Any
 from utils.csv_serializer import serialize_dict_rows
 from utils.dates import month_range
 
-#: Column order of the report. It leads with the URL, then Google's verdict
-#: and coverage state (what to act on), then the supporting states and
-#: canonicals (why), and ends with the link back into the Search Console UI.
+#: Column order of the report. It leads with the URL and where the audit found
+#: it, then Google's verdict and coverage state (what to act on), then the
+#: supporting states and canonicals (why), and ends with the link back into the
+#: Search Console UI.
 URL_INSPECTION_COLUMNS: tuple[str, ...] = (
     "URL",
+    "Source",
     "Verdict",
     "Coverage state",
     "Robots.txt state",
@@ -31,6 +39,14 @@ URL_INSPECTION_COLUMNS: tuple[str, ...] = (
     "Google inspection link",
     "Error",
 )
+
+#: Values of the "Source" column: the lists the audit knew a URL from. The
+#: report inspects the crawled pages and the sitemap's own URLs, and a URL in
+#: both is one row, not two -- so it is labelled with both sources rather than
+#: repeated, which would spend quota twice for the same answer.
+SOURCE_CRAWL = "crawl"
+SOURCE_SITEMAP = "sitemap"
+SOURCE_CRAWL_AND_SITEMAP = "crawl + sitemap"
 
 
 def url_inspection_csv_name(

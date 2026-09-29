@@ -21,8 +21,12 @@ clear error rather than an empty feed -- but importing it installs no reactor
 and starts nothing.
 
 All reports share a per-site cache, so a site is crawled once per audit run
-even when several months are missing from Google Drive. The cache is cleared
-before every run by :func:`clear_crawl_cache`.
+even when several months are missing from Google Drive. The cache also keeps
+what the crawl read about the XML sitemaps, which :func:`crawled_page_urls` and
+:func:`sitemap_page_urls` expose to the reports that need those URLs -- the URL
+Inspection report in particular, which inspects the crawled pages and the
+sitemap's own URLs. The cache is cleared before every run by
+:func:`clear_crawl_cache`.
 """
 
 from __future__ import annotations
@@ -64,8 +68,29 @@ _FEED_NAME = "crawl.jsonl"
 @dataclass
 class _CachedCrawl:
     report: CrawlReport
+    sitemap_page_urls: tuple[str, ...] = ()
     error: BaseException | None = None
     cleanup: Callable[[], None] | None = None
+
+
+@dataclass(frozen=True)
+class CrawlData:
+    """One crawl feed, reduced to what the audit reports need.
+
+    Attributes:
+        pages: the internal pages of the crawl, in crawl order.
+        external_statuses: normalised external URL -> HTTP status, where 0 means
+            the request never got a response.
+        sitemap_known: whether any XML sitemap could be read at all, which is
+            what separates "not in any sitemap" from "unknown".
+        sitemap_page_urls: the page URLs the sitemaps listed, as published.
+            Empty when no sitemap was readable.
+    """
+
+    pages: list[CrawlPage]
+    external_statuses: dict[str, int]
+    sitemap_known: bool
+    sitemap_page_urls: tuple[str, ...]
 
 
 _CRAWL_CACHE: dict[tuple[str, str], _CachedCrawl] = {}
@@ -132,15 +157,8 @@ def _to_page(
     )
 
 
-def read_pages(
-    output_file: Path, site_url: str
-) -> tuple[list[CrawlPage], dict[str, int], bool]:
-    """Read a JSONL crawl feed into pages and the external link statuses.
-
-    Returns:
-        The pages of the crawl, the normalised external URL -> HTTP status
-        mapping the crawl produced, and whether a sitemap could be read at all
-        (which is what separates "not in any sitemap" from "unknown").
+def read_crawl_data(output_file: Path, site_url: str) -> CrawlData:
+    """Read a JSONL crawl feed into everything the audit reports need.
 
     Records are parsed and reduced one at a time, so the feed is never held in
     memory as a whole. Duplicate documents (for example ``/a`` and ``/a/``,
@@ -172,7 +190,8 @@ def read_pages(
 
     if feed.sitemap_urls is None:
         logger.info(
-            "No XML sitemap could be read; the 'In Sitemap' column will be blank."
+            "No XML sitemap could be read; the 'In Sitemap' column will be blank "
+            "and the URL Inspection report will cover the crawled pages only."
         )
     else:
         logger.info(
@@ -186,7 +205,12 @@ def read_pages(
         len(pages),
         len(feed.external_statuses),
     )
-    return pages, feed.external_statuses, feed.sitemap_urls is not None
+    return CrawlData(
+        pages=pages,
+        external_statuses=feed.external_statuses,
+        sitemap_known=feed.sitemap_urls is not None,
+        sitemap_page_urls=feed.sitemap_page_urls,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -200,11 +224,11 @@ def _crawl_and_cache(site_url: str, sitemap_url: str | None) -> _CachedCrawl:
     logger.info("Crawl working directory: %s", output_file.parent)
     try:
         run_scrapy_crawl(start_url, output_file, sitemap_url=sitemap_url)
-        pages, external_statuses, sitemap_known = read_pages(output_file, start_url)
+        data = read_crawl_data(output_file, start_url)
         report = CrawlReport(
-            pages,
+            data.pages,
             thresholds=build_thresholds(),
-            external_statuses=external_statuses,
+            external_statuses=data.external_statuses,
         )
     except Exception as error:  # noqa: BLE001 - cached so we never re-crawl
         tmpdir.cleanup()
@@ -226,13 +250,16 @@ def _crawl_and_cache(site_url: str, sitemap_url: str | None) -> _CachedCrawl:
 
     with _CACHE_LOCK:
         _CRAWL_CACHE[(site_url, sitemap_url or "")] = _CachedCrawl(
-            report=report, cleanup=cleanup
+            report=report,
+            sitemap_page_urls=data.sitemap_page_urls,
+            cleanup=cleanup,
         )
     logger.info(
-        "Crawl report ready site=%s pages=%d sitemap=%s",
+        "Crawl report ready site=%s pages=%d sitemap=%s sitemap_urls=%d",
         site_url,
         report.page_count,
-        "read" if sitemap_known else "unavailable",
+        "read" if data.sitemap_known else "unavailable",
+        len(data.sitemap_page_urls),
     )
     return _CRAWL_CACHE[(site_url, sitemap_url or "")]
 
@@ -260,6 +287,28 @@ def crawled_page_urls(site_url: str, sitemap_url: str | None = None) -> list[str
         sitemap_url: the sitemap passed to the crawl, part of the cache key.
     """
     return [page.url for page in _report_for(site_url, sitemap_url).report.pages]
+
+
+def sitemap_page_urls(site_url: str, sitemap_url: str | None = None) -> list[str]:
+    """Return the page URLs this site's XML sitemaps list, reusing the audit cache.
+
+    These are the addresses the site itself publishes for indexing, as they
+    appear in the sitemap. A page the crawl never reached -- an orphan, a page
+    past the crawl budget, a noindex page the crawler was not allowed to fetch
+    -- is usually the one whose index status is worth checking, which is why the
+    URL Inspection report adds this list to the crawled pages. Reading it from
+    the same cached crawl as :func:`crawled_page_urls` is what keeps the cost of
+    the report at one crawl and no extra requests per run.
+
+    Empty when no sitemap could be read, which the crawl logs: that means
+    "unknown", not "the sitemap lists nothing", and a caller must not read the
+    empty list as a complete picture of the site.
+
+    Args:
+        site_url: the site the audit is crawling.
+        sitemap_url: the sitemap passed to the crawl, part of the cache key.
+    """
+    return list(_report_for(site_url, sitemap_url).sitemap_page_urls)
 
 
 def fetch_crawl_export(
