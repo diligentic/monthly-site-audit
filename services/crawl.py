@@ -248,6 +248,20 @@ def _report_for(site_url: str, sitemap_url: str | None) -> _CachedCrawl:
     return _crawl_and_cache(site_url, sitemap_url)
 
 
+def crawled_page_urls(site_url: str, sitemap_url: str | None = None) -> list[str]:
+    """Return the internal URLs of this site's crawl, reusing the audit cache.
+
+    Consumers that need the crawl's page list -- the URL Inspection report, for
+    instance -- must go through this rather than crawling again, so that a site
+    is fetched once per audit run no matter how many reports read it.
+
+    Args:
+        site_url: the site the audit is crawling.
+        sitemap_url: the sitemap passed to the crawl, part of the cache key.
+    """
+    return [page.url for page in _report_for(site_url, sitemap_url).report.pages]
+
+
 def fetch_crawl_export(
     *,
     export: str,

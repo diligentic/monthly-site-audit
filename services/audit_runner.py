@@ -24,7 +24,7 @@ from services.bing import (
 from services.bing import (
     validate_bing_credentials,
 )
-from services.crawl import clear_crawl_cache, fetch_crawl_export
+from services.crawl import clear_crawl_cache, crawled_page_urls, fetch_crawl_export
 from services.drive import (
     GoogleDriveError,
     GoogleDriveStorage,
@@ -37,6 +37,10 @@ from services.search_console import (
     validate_credentials,
 )
 from services.sitemap import fetch_sitemap_data
+from services.url_inspection import (
+    fetch_url_inspection_data,
+    validate_url_inspection_credentials,
+)
 from services.web_core_vitals import fetch_web_core_vitals_data
 from utils.bing_csv import (
     bing_pages_csv_name,
@@ -54,6 +58,10 @@ from utils.ga4_csv import ga4_csv_name, serialize_ga4_rows
 from utils.pages_csv import pages_csv_name, serialize_page_rows
 from utils.queries_csv import queries_csv_name, serialize_query_rows
 from utils.sitemap_csv import serialize_sitemap_rows, sitemap_csv_name
+from utils.url_inspection_csv import (
+    serialize_url_inspection_rows,
+    url_inspection_csv_name,
+)
 from utils.web_core_vitals_csv import (
     serialize_web_core_vitals_rows,
     web_core_vitals_csv_name,
@@ -162,6 +170,23 @@ def crawl_streams(site: Site) -> tuple[Stream, ...]:
     )
 
 
+def _url_inspection_rows(
+    site: Site, *, start_date: date, end_date: date
+) -> dict[str, Any]:
+    """Ask Google for the index status of every page the crawl found.
+
+    The page list comes from the shared crawl cache, so this report is the
+    reason a site is crawled exactly once per run no matter how many reports
+    need its pages.
+    """
+    return fetch_url_inspection_data(
+        site_url=site.gsc_site_url,
+        urls=crawled_page_urls(site.bing_site_url, site.sitemap_url),
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
 def streams_for(site: Site, *, crawl_only: bool = False) -> tuple[Stream, ...]:
     if crawl_only:
         return crawl_streams(site)
@@ -208,6 +233,17 @@ def streams_for(site: Site, *, crawl_only: bool = False) -> tuple[Stream, ...]:
                 partial(pages_csv_name, country=COUNTRY_FILTER_EXPRESSION),
             ),
             serialize=serialize_page_rows,
+        ),
+        Stream(
+            # Placed after the other Search Console streams and before the crawl
+            # reports: it reads the crawl's page list, and the shared crawl cache
+            # means that does not trigger a second crawl of the site.
+            label=f"{site.name} {provider.value} URL inspection",
+            fetch=partial(_url_inspection_rows, site),
+            drive_path=partial(
+                _drive_relative_path, site, provider, url_inspection_csv_name
+            ),
+            serialize=serialize_url_inspection_rows,
         ),
         Stream(
             label=f"{site.name} {Provider.BING.value} query",
@@ -438,6 +474,7 @@ def run_audit(
         validate_credentials()
         validate_bing_credentials()
         validate_ga4_credentials(SITES)
+        validate_url_inspection_credentials()
     storage = _build_storage()
 
     anchor = today or datetime.now(UTC).date()

@@ -7,6 +7,8 @@ command line or through the HTTP API.
 ## What it collects
 
 - Google Search Console search queries and pages
+- Google Search Console URL Inspection (Google's own index verdict for every
+  crawled page)
 - Bing Webmaster search queries and pages
 - Google Analytics 4 traffic, landing pages, and selected events
 - Sitemap URLs
