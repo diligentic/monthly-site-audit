@@ -5,7 +5,7 @@ from datetime import date
 from dotenv import load_dotenv
 
 from constants.sites import SITES
-from services.audit_runner import run_audit
+from services.audit_notification import run_audit_with_notification
 from utils.get_env import ConfigurationError
 
 logging.basicConfig(
@@ -45,7 +45,11 @@ def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     load_dotenv()
     try:
-        result = run_audit(
+        scope = f"site {args.site}" if args.site else "all configured sites"
+        if args.crawl_only:
+            scope += " (crawl only)"
+        result = run_audit_with_notification(
+            scope=scope,
             site_names=[args.site] if args.site else None,
             today=args.date,
             crawl_only=args.crawl_only,

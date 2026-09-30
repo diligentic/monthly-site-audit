@@ -405,6 +405,7 @@ class StreamResult:
     status: str  # "stored" | "skipped" | "failed"
     row_count: int = 0
     error: str | None = None
+    drive_path: str | None = None
 
 
 @dataclass
@@ -452,7 +453,14 @@ def run_site_collect(
                     error,
                 )
                 results.append(
-                    StreamResult(stream.label, month_label, "failed", 0, str(error))
+                    StreamResult(
+                        stream.label,
+                        month_label,
+                        "failed",
+                        0,
+                        str(error),
+                        stream.drive_path(today, months_back),
+                    )
                 )
             else:
                 results.append(
