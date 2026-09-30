@@ -79,4 +79,58 @@ GA4_EVENTS = GA4Report(
     },
 )
 
-GA4_REPORTS = (GA4_TRAFFIC_ACQUISITION, GA4_LANDING_PAGE, GA4_EVENTS)
+_DEMOGRAPHIC_METRICS = [
+    {"name": "activeUsers"},
+    {"name": "newUsers"},
+    {"name": "engagedSessions"},
+    {"name": "engagementRate"},
+    {"name": "engagedSessionsPerUser", "expression": "engagedSessions/activeUsers"},
+    {
+        "name": "averageEngagementTimePerUser",
+        "expression": "userEngagementDuration/activeUsers",
+    },
+    {"name": "eventCount"},
+    {"name": "keyEvents"},
+    {"name": "userKeyEventRate"},
+    {"name": "totalRevenue"},
+]
+
+GA4_DEMOGRAPHIC_CANADA = GA4Report(
+    file_stem="demographic_canada",
+    label="Canada demographic",
+    key_column="country",
+    dimensions=[{"name": "country"}],
+    metrics=_DEMOGRAPHIC_METRICS,
+    extra_payload={
+        "dimensionFilter": {
+            "filter": {
+                "fieldName": "country",
+                "stringFilter": {"matchType": "EXACT", "value": "Canada"},
+            }
+        }
+    },
+)
+
+GA4_DEMOGRAPHIC_CALGARY = GA4Report(
+    file_stem="demographic_calgary",
+    label="Calgary demographic",
+    key_column="city",
+    dimensions=[{"name": "city"}],
+    metrics=_DEMOGRAPHIC_METRICS,
+    extra_payload={
+        "dimensionFilter": {
+            "filter": {
+                "fieldName": "city",
+                "stringFilter": {"matchType": "EXACT", "value": "Calgary"},
+            }
+        }
+    },
+)
+
+GA4_REPORTS = (
+    GA4_TRAFFIC_ACQUISITION,
+    GA4_LANDING_PAGE,
+    GA4_EVENTS,
+    GA4_DEMOGRAPHIC_CANADA,
+    GA4_DEMOGRAPHIC_CALGARY,
+)
