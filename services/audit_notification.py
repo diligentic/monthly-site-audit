@@ -2,6 +2,8 @@
 
 import logging
 import os
+from datetime import UTC, datetime
+from html import escape
 from collections.abc import Callable
 from typing import Any
 
@@ -57,7 +59,6 @@ def _message_body(
         lines = [
             "The audit exited with an error before it could complete.",
             f"Scope: {scope}",
-            f"Run ID: {run_id or 'unavailable'}",
             f"Error: {run_error}",
         ]
     else:
@@ -66,9 +67,8 @@ def _message_body(
             subject = f"Audit completed with {result.failures} failure(s)"
             lines = [
                 "The audit completed, but one or more data sources failed.",
-                f"Run ID: {run_id or 'unavailable'}",
-                f"Started: {result.started_at}",
-                f"Finished: {result.finished_at}",
+                f"Started: {_format_timestamp(result.started_at)}",
+                f"Finished: {_format_timestamp(result.finished_at)}",
                 f"Duration: {result.duration_seconds:.1f} seconds",
                 f"Failed streams: {result.failures}",
             ]
@@ -90,12 +90,101 @@ def _message_body(
             subject = "Audit completed successfully"
             lines = [
                 "The audit completed successfully with no failed data sources.",
-                f"Run ID: {run_id or 'unavailable'}",
-                f"Started: {result.started_at}",
-                f"Finished: {result.finished_at}",
+                f"Started: {_format_timestamp(result.started_at)}",
+                f"Finished: {_format_timestamp(result.finished_at)}",
                 f"Duration: {result.duration_seconds:.1f} seconds",
             ]
     return subject, "\n".join(lines)
+
+
+def _format_timestamp(value: str) -> str:
+    """Format audit timestamps consistently, preserving invalid input verbatim."""
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return value
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC).strftime("%b %d, %Y at %I:%M:%S %p UTC")
+
+
+def _html_content(subject: str, body: str) -> str:
+    """Render a readable, email-client-friendly HTML version of the message."""
+    paragraphs = body.split("\n\n", 1)
+    if len(paragraphs) > 1:
+        introduction = escape(paragraphs[0])
+        details = paragraphs[1].splitlines()
+    else:
+        lines = body.splitlines()
+        introduction = escape(lines[0]) if lines else ""
+        details = lines[1:]
+    summary_labels = {"Scope", "Started", "Finished", "Duration", "Failed streams"}
+    summary_rows = []
+    failures = []
+    for line in details:
+        label, separator, value = line.partition(": ")
+        if not separator:
+            continue
+        if label in summary_labels:
+            summary_rows.append(
+                "<tr>"
+                f'<th align="left" style="padding:8px 12px;color:#475569;">{escape(label)}</th>'
+                f'<td style="padding:8px 12px;color:#0f172a;">{escape(value)}</td>'
+                "</tr>"
+            )
+        elif label == "Site":
+            failures.append({"Site": value})
+        elif failures and label in {"Source/API", "Month", "Expected Drive file", "Error"}:
+            failures[-1][label] = value
+        elif label == "Error":
+            failures.append({"Error": value})
+
+    summary = ""
+    if summary_rows:
+        summary = (
+            '<table role="presentation" style="width:100%;border-collapse:collapse;'
+            'background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">'
+            + "".join(summary_rows)
+            + "</table>"
+        )
+    failure_cards = []
+    for failure in failures:
+        rows = []
+        for label in ("Site", "Source/API", "Month", "Expected Drive file", "Error"):
+            if label in failure:
+                rows.append(
+                    "<tr>"
+                    f'<th align="left" valign="top" style="width:150px;padding:7px 10px;color:#475569;">{escape(label)}</th>'
+                    f'<td style="padding:7px 10px;color:#0f172a;overflow-wrap:anywhere;">{escape(failure[label])}</td>'
+                    "</tr>"
+                )
+        failure_cards.append(
+            '<table role="presentation" style="width:100%;border-collapse:collapse;'
+            'margin-top:12px;border:1px solid #e2e8f0;border-left:4px solid #dc2626;'
+            'background:#fff;">' + "".join(rows) + "</table>"
+        )
+    failures_html = "".join(failure_cards)
+    other_details = ""
+    if not summary_rows and not failure_cards and details:
+        other_details = (
+            '<div style="padding:14px 16px;background:#f8fafc;'
+            'border:1px solid #e2e8f0;border-radius:8px;line-height:1.6;">'
+            + "<br>".join(escape(line) for line in details)
+            + "</div>"
+        )
+    return (
+        '<!doctype html><html><body style="margin:0;background:#f1f5f9;'
+        'font-family:Arial,Helvetica,sans-serif;color:#0f172a;">'
+        '<div style="max-width:720px;margin:24px auto;padding:0 16px;">'
+        '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">'
+        '<div style="padding:22px 26px;background:#0f172a;color:#fff;">'
+        f'<h1 style="margin:0;font-size:22px;">{escape(subject)}</h1></div>'
+        '<div style="padding:24px 26px;">'
+        f'<p style="margin:0 0 20px;line-height:1.6;">{introduction}</p>'
+        f'{summary}{failures_html}{other_details}'
+        '</div></div><p style="margin:14px 0;text-align:center;color:#64748b;font-size:12px;">Site Audit notification</p>'
+        '</div></body></html>'
+    )
 
 
 def send_audit_notification(
@@ -125,6 +214,7 @@ def send_audit_notification(
         ],
         "subject": subject,
         "textContent": body,
+        "htmlContent": _html_content(subject, body),
     }
     if not payload["to"]:
         logger.error("Audit email notification not sent; no valid recipients configured")
@@ -138,8 +228,18 @@ def send_audit_notification(
         )
         response.raise_for_status()
         logger.info("Audit status notification sent through Brevo")
-    except requests.RequestException:
-        logger.exception("Could not send audit status notification through Brevo")
+    except requests.RequestException as error:
+        response = error.response
+        if response is not None:
+            detail = response.text[:2000]
+            logger.error(
+                "Could not send audit status notification through Brevo "
+                "(HTTP %s): %s",
+                response.status_code,
+                detail or error,
+            )
+        else:
+            logger.exception("Could not send audit status notification through Brevo")
 
 
 def run_audit_with_notification(
