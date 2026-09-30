@@ -60,11 +60,22 @@ GOOGLE_OAUTH_CLIENT_ID=your-client-id
 GOOGLE_OAUTH_CLIENT_SECRET=your-client-secret
 GOOGLE_REFRESH_TOKEN=your-refresh-token
 GOOGLE_DRIVE_ROOT_FOLDER_ID=
+
+BREVO_API_KEY=your-brevo-api-key
+AUDIT_NOTIFICATION_TO_EMAIL=you@example.com
+AUDIT_NOTIFICATION_FROM_EMAIL=verified-sender@example.com
+AUDIT_NOTIFICATION_FROM_NAME=Site Audit
 ```
 
 The Google OAuth credentials must have access to the required Search Console,
 Analytics, and Drive data. `GOOGLE_DRIVE_ROOT_FOLDER_ID` is optional; if omitted,
 the project uses the top level of My Drive.
+
+Audit email notifications are sent through Brevo when all three required
+notification values are configured. `AUDIT_NOTIFICATION_TO_EMAIL` accepts a
+comma-separated list. The sender address must be verified in Brevo;
+`AUDIT_NOTIFICATION_FROM_NAME` is optional. Notification delivery errors are
+logged and do not change the audit result.
 
 ## Run an audit
 

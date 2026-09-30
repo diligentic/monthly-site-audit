@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from constants.sources import Provider
 from constants.sites import SITES
-from services.audit_runner import run_audit
+from services.audit_notification import run_audit_with_notification
 from services.drive import GoogleDriveError, GoogleDriveStorage
 from utils.get_env import ConfigurationError
 
@@ -150,7 +150,11 @@ class RunManager:
             os.getenv("RENDER_GIT_COMMIT", "unknown"),
         )
         try:
-            result = run_audit(
+            result = run_audit_with_notification(
+                run_id=run_id,
+                scope=(
+                    f"site {site}" if site else "all configured sites"
+                ) + (" (crawl only)" if crawl_only else ""),
                 site_names=[site] if site else None,
                 today=requested_date,
                 crawl_only=crawl_only,
