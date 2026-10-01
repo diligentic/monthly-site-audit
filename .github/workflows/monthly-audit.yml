@@ -2,7 +2,7 @@ name: Monthly Audit
 
 on:
   schedule:
-    - cron: "30 11 * * *"
+    - cron: "30 3 5 * *" # 5th of every month at 09:00 IST
 
   workflow_dispatch:
 
