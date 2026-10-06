@@ -52,3 +52,49 @@ jobs:
           fi
 
           echo "Audit triggered successfully."
+
+          run_id=$(jq -r '.run_id' /tmp/response.json)
+          if [ -z "${run_id}" ] || [ "${run_id}" = "null" ]; then
+            echo "::error::Audit API did not return a run ID."
+            exit 1
+          fi
+
+          echo "Waiting for audit run ${run_id} to finish."
+          poll_interval_seconds=600
+          echo "Checking status every 10 minutes to keep the Render Free service active."
+          while true; do
+            sleep "${poll_interval_seconds}"
+            status_code=$(curl -sS \
+              -o /tmp/status.json \
+              -w "%{http_code}" \
+              "${AUDIT_ENDPOINT}/${run_id}" \
+              -H "X-Api-Key: ${AUDIT_API_KEY}" || true)
+
+            if [ "${status_code}" != "200" ]; then
+              cat /tmp/status.json 2>/dev/null || true
+              echo "::error::Could not read audit status (HTTP ${status_code})."
+              exit 1
+            fi
+
+            run_status=$(jq -r '.status' /tmp/status.json)
+            echo "Audit status: ${run_status}"
+            case "${run_status}" in
+              completed)
+                echo "Audit run ${run_id} completed successfully."
+                exit 0
+                ;;
+              completed_with_failures)
+                echo "::error::Audit completed with $(jq -r '.failures' /tmp/status.json) failure(s)."
+                exit 1
+                ;;
+              failed)
+                echo "::error::Audit failed: $(jq -r '.error' /tmp/status.json)"
+                exit 1
+                ;;
+              running) ;;
+              *)
+                echo "::error::Unexpected audit status: ${run_status}"
+                exit 1
+                ;;
+            esac
+          done

@@ -65,6 +65,13 @@ class RunResponse(BaseModel):
     status: str
 
 
+class RunStatusResponse(BaseModel):
+    run_id: str
+    status: str
+    failures: int | None = None
+    error: str | None = None
+
+
 def _require_api_key(
     x_api_key: str | None = Header(default=None, alias="X-Api-Key"),
 ) -> None:
@@ -103,16 +110,11 @@ class RunInProgressError(RuntimeError):
 
 
 class RunManager:
-    """Starts audits on a background thread so the trigger returns instantly.
-
-    Only the in-progress run id is kept in memory; it guards against two
-    overlapping audits (which would double-crawl the sites). The manager is
-    intentionally stateless otherwise — results live on Google Drive and in
-    the application logs.
-    """
+    """Run an audit in-process and expose state for workflow recovery."""
 
     def __init__(self) -> None:
         self._active: str | None = None
+        self._runs: dict[str, RunStatusResponse] = {}
         self._lock = threading.Lock()
 
     def start(
@@ -120,13 +122,14 @@ class RunManager:
         *,
         site: str | None,
         requested_date: date_type | None,
-        crawl_only: bool = False,
+        crawl_only: bool,
     ) -> str:
         with self._lock:
             if self._active is not None:
                 raise RunInProgressError(self._active)
             run_id = uuid.uuid4().hex
             self._active = run_id
+            self._runs[run_id] = RunStatusResponse(run_id=run_id, status="running")
         thread = threading.Thread(
             target=self._execute,
             args=(run_id, site, requested_date, crawl_only),
@@ -135,6 +138,10 @@ class RunManager:
         )
         thread.start()
         return run_id
+
+    def get_status(self, run_id: str) -> RunStatusResponse | None:
+        with self._lock:
+            return self._runs.get(run_id)
 
     def _execute(
         self,
@@ -152,9 +159,8 @@ class RunManager:
         try:
             result = run_audit_with_notification(
                 run_id=run_id,
-                scope=(
-                    f"site {site}" if site else "all configured sites"
-                ) + (" (crawl only)" if crawl_only else ""),
+                scope=(f"site {site}" if site else "all configured sites")
+                + (" (crawl only)" if crawl_only else ""),
                 site_names=[site] if site else None,
                 today=requested_date,
                 crawl_only=crawl_only,
@@ -165,14 +171,26 @@ class RunManager:
                     run_id,
                     result.failures,
                 )
+                final_status = "completed_with_failures"
             else:
                 logger.info("Audit run %s finished", run_id)
+                final_status = "completed"
+            status_result = RunStatusResponse(
+                run_id=run_id,
+                status=final_status,
+                failures=result.failures,
+            )
         except Exception:
             logger.exception("Audit run %s failed", run_id)
-        finally:
-            with self._lock:
-                if self._active == run_id:
-                    self._active = None
+            status_result = RunStatusResponse(
+                run_id=run_id,
+                status="failed",
+                error="Audit failed; see Render logs for details.",
+            )
+        with self._lock:
+            self._runs[run_id] = status_result
+            if self._active == run_id:
+                self._active = None
 
 
 manager = RunManager()
@@ -209,9 +227,31 @@ def create_run(payload: RunRequest | None = None) -> RunResponse:
     except RunInProgressError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"An audit run is already in progress (run {error}).",
+            detail={
+                "message": "An audit run is already active.",
+                "run_id": str(error),
+            },
         ) from error
     return RunResponse(run_id=run_id, status="running")
+
+
+@app.get(
+    "/api/v1/audit/runs/{run_id}",
+    response_model=RunStatusResponse,
+    tags=["audit"],
+    dependencies=[Depends(_require_api_key)],
+)
+def get_run_status(run_id: str, response: Response) -> RunStatusResponse:
+    """Return this process's run state; a missing ID signals a restart."""
+    response.headers["Cache-Control"] = "no-store"
+    result = manager.get_status(run_id)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Run state is unavailable; the Render process may have restarted.",
+            headers={"Cache-Control": "no-store"},
+        )
+    return result
 
 
 @app.get(

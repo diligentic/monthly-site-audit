@@ -643,7 +643,7 @@ class SeoAuditSpider(Spider):
             and response.status in _HEAD_UNSUPPORTED_STATUSES
         ):
             yield Request(
-                url,
+                original_url,
                 method="GET",
                 callback=self.parse_external,
                 errback=self.handle_external_failure,
