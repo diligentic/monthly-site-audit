@@ -71,7 +71,7 @@ GA4_EVENTS = GA4Report(
                     "values": [
                         "booking_link_click",
                         "cal_cta_click",
-                        "calendly_cta_click",
+                        "call_booked",
                     ]
                 },
             }
