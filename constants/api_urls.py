@@ -3,6 +3,7 @@ SEARCH_ANALYTICS_QUERY_PATH = "sites/{site_url}/searchAnalytics/query"
 
 GOOGLE_ANALYTICS_DATA_BASE_URL = "https://analyticsdata.googleapis.com/v1beta/properties"
 GA4_RUN_REPORT_PATH = "{property_id}:runReport"
+GA4_METADATA_PATH = "{property_id}/metadata"
 
 GOOGLE_URL_INSPECTION_BASE_URL = "https://searchconsole.googleapis.com/v1"
 URL_INSPECTION_INSPECT_PATH = "urlInspection/index:inspect"

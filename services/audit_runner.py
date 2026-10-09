@@ -6,7 +6,12 @@ from functools import partial
 from typing import Any
 
 from constants.crawl import CRAWL_EXPORTS
-from constants.ga4 import GA4_REPORTS, GA4Report
+from constants.ga4 import (
+    GA4_REPORTS,
+    GA4_TRACKED_EVENTS,
+    GA4Report,
+    ga4_event_detail_report,
+)
 from constants.search_console import COUNTRY_FILTER_EXPRESSION
 from constants.sites import (
     QUARTERLY_MONTHS,
@@ -35,7 +40,12 @@ from services.drive import (
     GoogleDriveStorage,
     validate_drive_credentials,
 )
-from services.ga4 import fetch_ga4_data, validate_ga4_credentials
+from services.ga4 import (
+    clear_ga4_metadata_cache,
+    fetch_ga4_data,
+    ga4_dimension_names,
+    validate_ga4_credentials,
+)
 from services.search_console import (
     fetch_page_data,
     fetch_query_data,
@@ -59,7 +69,11 @@ from utils.crawl_csv import (
     serialize_crawl_rows,
 )
 from utils.dates import month_range
-from utils.ga4_csv import ga4_csv_name, serialize_ga4_rows
+from utils.ga4_csv import (
+    ga4_csv_name,
+    legacy_ga4_csv_name,
+    serialize_ga4_rows,
+)
 from utils.pages_csv import pages_csv_name, serialize_page_rows
 from utils.queries_csv import queries_csv_name, serialize_query_rows
 from utils.sitemap_csv import serialize_sitemap_rows, sitemap_csv_name
@@ -121,6 +135,7 @@ def _make_stream(
     csv_name: Callable[..., str],
     serialize: Callable[..., bytes],
     response_field: str = "rows",
+    legacy_drive_path: Callable[..., str] | None = None,
 ) -> Stream:
     return Stream(
         label=label,
@@ -128,10 +143,26 @@ def _make_stream(
         drive_path=partial(_drive_relative_path, site, provider, csv_name),
         serialize=serialize,
         response_field=response_field,
+        legacy_drive_path=legacy_drive_path,
     )
 
 
-def ga4_stream(site: Site, report: GA4Report) -> Stream:
+def ga4_stream(
+    site: Site,
+    report: GA4Report,
+    *,
+    legacy_file_stem: str | None = None,
+) -> Stream:
+    legacy_drive_path = (
+        partial(
+            _drive_relative_path,
+            site,
+            Provider.GA4,
+            partial(legacy_ga4_csv_name, legacy_file_stem),
+        )
+        if legacy_file_stem
+        else None
+    )
     return _make_stream(
         site=site,
         provider=Provider.GA4,
@@ -143,7 +174,67 @@ def ga4_stream(site: Site, report: GA4Report) -> Stream:
         ),
         csv_name=partial(ga4_csv_name, report),
         serialize=partial(serialize_ga4_rows, report=report),
+        legacy_drive_path=legacy_drive_path,
     )
+
+
+def ga4_report_streams(site: Site) -> tuple[Stream, ...]:
+    """Return the fixed GA4 reports.
+
+    A report whose stem contains a subfolder (currently only the events summary,
+    ``events/events``) is paired with its previous flat Drive path so an
+    existing ``events_YYYY-MM.csv`` is migrated into the folder rather than
+    refetched.
+    """
+    return tuple(
+        ga4_stream(
+            site,
+            report,
+            legacy_file_stem=(
+                report.file_stem.rsplit("/", 1)[-1]
+                if "/" in report.file_stem
+                else None
+            ),
+        )
+        for report in GA4_REPORTS
+    )
+
+
+def ga4_event_detail_streams(site: Site) -> tuple[Stream, ...]:
+    """Build one event detail stream per tracked key event.
+
+    The custom event dimensions are not available on every GA4 property yet.
+    Rather than sending requests the API rejects with HTTP 400, ask the
+    property metadata which dimensions exist and only collect details that can
+    succeed. A property without the custom event dimensions is skipped with a
+    log line instead of a failed stream.
+    """
+    try:
+        available_dimensions = ga4_dimension_names(site.ga4_property_id_env_var)
+    except Exception as error:
+        logger.warning(
+            "Skipping %s %s event details: could not read property metadata: %s",
+            site.name,
+            Provider.GA4.value,
+            error,
+        )
+        return ()
+
+    streams: list[Stream] = []
+    for event_name in GA4_TRACKED_EVENTS:
+        report = ga4_event_detail_report(
+            event_name, available_dimensions=available_dimensions
+        )
+        if report is None:
+            logger.info(
+                "Skipping %s %s event details: property has no custom event "
+                "dimensions",
+                site.name,
+                Provider.GA4.value,
+            )
+            return ()
+        streams.append(ga4_stream(site, report))
+    return tuple(streams)
 
 
 def crawl_streams(site: Site) -> tuple[Stream, ...]:
@@ -290,7 +381,8 @@ def streams_for(site: Site, *, crawl_only: bool = False) -> tuple[Stream, ...]:
             ),
             serialize=serialize_web_core_vitals_rows,
         ),
-        *[ga4_stream(site, report) for report in GA4_REPORTS],
+        *ga4_report_streams(site),
+        *ga4_event_detail_streams(site),
     )
 
 
@@ -486,6 +578,7 @@ def run_audit(
     not reuse a snapshot from an earlier run.
     """
     clear_crawl_cache()
+    clear_ga4_metadata_cache()
     validate_drive_credentials()
     if not crawl_only:
         validate_credentials()
